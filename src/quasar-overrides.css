@@ -1,0 +1,2 @@
+/* Keep compact workbench typography independent of Quasar heading defaults. */
+.no-ide h2, .no-ide h3 { line-height: 1.5; letter-spacing: 0; }

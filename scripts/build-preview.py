@@ -26,7 +26,7 @@ if not args.offline_controls and not (args.quasar_js and args.quasar_css):
 code = (root / 'src/app.js').read_text(encoding='utf-8')
 code = re.sub(r"import \{([^}]+)\} from 'vue'", r'const {\1} = Vue', code, count=1)
 code = code.replace('export function createNoIdeApp()', 'function createNoIdeApp()')
-css = (root / 'src/styles.css').read_text(encoding='utf-8')
+css = (root / 'src/styles.css').read_text(encoding='utf-8') + '\n' + (root / 'src/quasar-overrides.css').read_text(encoding='utf-8')
 vue = args.vue.read_text(encoding='utf-8')
 if args.offline_controls:
     code = code.replace('示例项目与数据 · 未连接本地执行器', '示例数据 · 离线交互版 · 执行器未连接')
@@ -50,7 +50,7 @@ Vue.createApp(createNoIdeApp()).component('QBtn', ReviewButton).component('QTogg
 else:
     css = args.quasar_css.read_text(encoding='utf-8') + '\n' + css
     runtime = args.quasar_js.read_text(encoding='utf-8')
-    bootstrap = "Vue.createApp(createNoIdeApp()).use(Quasar,{config:{brand:{primary:'#d74780'}}}).mount('#app');"
+    bootstrap = "Vue.createApp(createNoIdeApp()).use(Quasar,{config:{brand:{primary:'#d74780'}}}).mount('#app'); document.documentElement.lang='zh-CN';"
     mode = 'quasar'
 
 def esc_script(s):

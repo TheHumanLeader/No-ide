@@ -6,22 +6,26 @@
 
 ## 当前交付
 
-当前是 **前端交互原型**，还没有 Rust 执行器。
+前端使用 **Vue 3 + Quasar + Vite**。提供运行台、项目管理、运行记录、环境与设备、设置五个页面。支持服务启停、更新流程、连续改动合并、失败保留旧版本、重试、日志筛选与导出、错误上下文复制、项目添加、运行配置、快捷搜索、主题和紧凑布局的交互演示。
 
-已提供运行台、项目管理、运行记录、环境与设备、设置五个页面。可以体验服务启停、连续改动合并、更新流程、编译失败保留旧版本、重试、日志筛选与导出、错误上下文复制、项目添加、运行配置、快捷搜索、主题和紧凑布局。
+**当前为交互原型，Rust 执行器尚未接入。** 项目、运行状态、日志、响应和设备均为明确标注的示例。页面不会读取本地项目、启动进程、检测环境或向示例接口发送请求。没有实测性能数据。
 
-所有项目、运行状态、日志、响应和设备均为明确标注的示例。页面不会读取本地项目、启动进程、检测环境或向示例接口发请求。没有实测性能数据。
+## 直接看前端
 
-## 看前端
+本次会话提供 `No-ide-preview.html`：已内嵌真实 Vue / Quasar 运行库，无外部网络依赖。用浏览器打开即可体验，无需安装开发依赖。
 
-正式源码使用 **Vue 3 + Quasar QBtn / QToggle + Vite**，不是用其他框架冒充 Quasar。
+正式 Quasar 构建已通过 GitHub Actions，构建产物取回后通过 **25 项 Chromium / Playwright 交互检查**。验证版本：Quasar 2.33.0、Vue 3.5.43、Vite 8.3.0。详见 [验证记录](prd/verification.md)。
+
+建议体验：选择“业务服务” → 模拟代码改动 → 查看构建和更新 → 模拟编译失败 → 复制给 AI → 重试更新。
+
+## 开发与构建
 
 ```bash
 npm install
 npm run dev
 ```
 
-开发服务默认仅监听本机。生产构建：
+开发服务默认仅监听本机。建议 Node.js 22.12+。
 
 ```bash
 npm run check
@@ -29,27 +33,13 @@ npm run build
 npm run preview
 ```
 
-Node.js 要求：20.19+ 或 22.12+，建议使用 Node.js 22。
-
-### 单文件交互预览
-
-本次会话另交付了 `No-ide-preview.html`，无需运行开发服务器。
-
-在有依赖的环境里，可打包包含真实 Quasar 运行库的离线文件：
+生成内嵌真实 Quasar 的单文件：
 
 ```bash
 python scripts/build-preview.py --vue node_modules/vue/dist/vue.global.prod.js --quasar-js node_modules/quasar/dist/quasar.umd.prod.js --quasar-css node_modules/quasar/dist/quasar.prod.css --output dist/No-ide-preview.html
 ```
 
-本次工作容器无法访问 npm / CDN，因此最初交付的离线交互版使用 Vue 运行库和两个标注清楚的兼容控件。该交互版与正式源码共用页面模板、状态逻辑和样式，但它的测试**不等于完整 Quasar 构建测试**。生成脚本要求显式传入 `--offline-controls` 才启用此模式；不会静默替换正式依赖。具体测试范围见 [验证记录](prd/verification.md)。
-
-仓库包含前端构建工作流；是否构建通过，以 GitHub Actions 的实际结果为准，不预先宣称成功。
-
-## 建议体验路径
-
-选择“业务服务” → 模拟代码改动 → 查看构建和更新 → 模拟编译失败 → 在问题面板复制给 AI → 重试更新。
-
-也可以关闭自动更新，再模拟改动，观察待处理状态并手动应用。点击结果预览可以查看明确标注的示例响应。
+构建工作流输出编译产物、单文件、上游许可证和实际解析的依赖锁。`--offline-controls` 仅保留为显式离线兼容测试选项，最终交付预览不使用该选项。
 
 ## 目录
 
@@ -59,12 +49,11 @@ python scripts/build-preview.py --vue node_modules/vue/dist/vue.global.prod.js -
 - `src/app.js`：页面模板与预览状态适配器。
 - `src/styles.css`：明亮粉色 / 星空蓝、响应式布局。
 - `src/main.js`：真实 Quasar 入口。
-- `scripts/build-preview.py`：单文件打包，支持真实 Quasar 或显式离线兼容模式。
+- `src/quasar-overrides.css`：工作台紧凑标题样式。
+- `scripts/build-preview.py`：单文件打包。
 - `tests/interaction-smoke.py`：浏览器交互检查。
 - [后续协作规则](AGENTS.md)
 
-## 不做的事
+## 后续
 
-不以模拟数据冒充运行结果；不默认构建全工程索引；不常驻所有语言服务器；不让日志和任务无限堆积；不把 Android 重新部署说成原地热替换。
-
-后端计划：Rust 本地执行器，接管原有 JDK / Maven / Gradle / Node.js / Python / Android SDK。接入后替换预览适配器，保留面向用户的操作与反馈。
+Rust 本地执行器接管项目原有 JDK / Maven / Gradle / Node.js / Python / Android SDK。接入后替换预览适配器，保留面向用户的操作和反馈。不默认构建全工程索引，不常驻所有语言服务，不让日志或任务无限堆积。
