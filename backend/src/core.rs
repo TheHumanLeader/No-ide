@@ -26,7 +26,7 @@ pub fn native_path(p:PathBuf)->PathBuf {
 #[derive(Clone,Default,Serialize,Deserialize)]
 #[serde(default)]pub struct ToolSettings { pub git:Option<String>, pub svn:Option<String>, pub svn_config_dir:Option<String> }
 #[derive(Clone,Default,Serialize,Deserialize)]
-#[serde(default)]pub struct Store { pub tools:ToolSettings, pub projects:Vec<Project> }
+#[serde(default)]pub struct Store { pub tools:ToolSettings, pub projects:Vec<Project>, pub environments:Vec<crate::environments::Environment>, pub environment_defaults:BTreeMap<String,String> }
 #[derive(Clone,Serialize,Deserialize)]pub struct Project {
  pub id:String, pub name:String, pub root:PathBuf,
  #[serde(default)] pub tools:ToolSettings,
@@ -34,10 +34,11 @@ pub fn native_path(p:PathBuf)->PathBuf {
  #[serde(default)] pub instances:Vec<Instance>,
  #[serde(default)] pub repos:Vec<Repo>,
 }
-#[derive(Clone,Serialize,Deserialize)]pub struct Repo {pub id:String,pub kind:String,pub path:PathBuf}
-#[derive(Clone,Serialize,Deserialize)]pub struct CommandSpec {pub program:String, #[serde(default)] pub args:Vec<String>}
+#[derive(Clone,Serialize,Deserialize)]pub struct Repo {pub id:String,pub kind:String,pub path:PathBuf, #[serde(default)]pub groups:crate::groups::Groups}
+#[derive(Clone,Default,Serialize,Deserialize)]pub struct CommandSpec {pub program:String, #[serde(default)] pub args:Vec<String>}
 #[derive(Clone,Serialize,Deserialize)]pub struct RunConfig {
- pub id:String, pub name:String, pub command:CommandSpec,
+ pub id:String, pub name:String, #[serde(default)]pub command:CommandSpec,
+ #[serde(default)]pub environment_id:Option<String>, #[serde(default)]pub launcher:Option<crate::launch::Launcher>,
  #[serde(default="dot")] pub cwd:String,
  #[serde(default)] pub build:Option<CommandSpec>,
  #[serde(default)] pub watch:Vec<String>,
@@ -46,16 +47,17 @@ pub fn native_path(p:PathBuf)->PathBuf {
 fn dot()->String {".".into()}
 #[derive(Clone,Serialize,Deserialize)]pub struct Instance {
  pub id:String,pub name:String,pub config_id:String,
+ #[serde(default)]pub environment_id:Option<String>,
  #[serde(default)] pub port:Option<u16>,
  #[serde(default)] pub args:Vec<String>,
  #[serde(default)] pub env:BTreeMap<String,String>,
 }
 impl Store {
- pub fn load(file:&Path)->Result<Self> {if !file.exists(){return Ok(Self::default())} if file.metadata()?.len()>2*1024*1024{return fail("配置文件过大")} Ok(serde_json::from_slice(&std::fs::read(file)?)?)}
+ pub fn load(file:&Path)->Result<Self> {if !file.exists(){return Ok(Self::default())} if file.metadata()?.len()>8*1024*1024{return fail("配置文件过大")} Ok(serde_json::from_slice(&std::fs::read(file)?)?)}
  pub fn save(&self,file:&Path)->Result<()> {
   let parent=file.parent().ok_or_else(||Error("无效配置目录".into()))?;
   let mut temp=tempfile::NamedTempFile::new_in(parent)?;
-  temp.write_all(&serde_json::to_vec_pretty(self)?)?;temp.as_file().sync_all()?;
+  let bytes=serde_json::to_vec_pretty(self)?;if bytes.len()>8*1024*1024{return fail("本地配置超过 8 MiB，未写入。请减少已记忆的文件分组")};temp.write_all(&bytes)?;temp.as_file().sync_all()?;
   temp.persist(file).map_err(|e|Error(e.to_string()))?;Ok(())
  }
  pub fn project(&self,p:&str)->Result<Project> {self.projects.iter().find(|v|v.id==p).cloned().ok_or_else(||Error("项目不存在".into()))}

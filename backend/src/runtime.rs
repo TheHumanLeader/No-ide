@@ -16,60 +16,64 @@ impl Hub{
 }
 #[derive(Clone)]pub struct Runtime{groups:Arc<Mutex<HashMap<String,Group>>>,pub states:Arc<Mutex<HashMap<String,RunView>>>,pub hub:Arc<Hub>,builds:Arc<Semaphore>}
 #[derive(Clone)]struct Group{tx:mpsc::Sender<Control>,cancel:watch::Sender<u64>,project:String}
-enum Control{Start(Instance),Stop(String),Update,Shutdown}
+enum Control{Start(Instance,Store),Stop(String),Update,Shutdown}
 struct Running{child:process::Managed,readers:Vec<tokio::task::JoinHandle<()>>,instance:Instance,deadline:Instant,ready:bool}
 impl Runtime{
  pub fn new()->Self{Self{groups:Default::default(),states:Default::default(),hub:Arc::new(Hub::new()),builds:Arc::new(Semaphore::new(2))}}
  async fn state(&self,id:&str,state:&str,pid:Option<u32>,error:Option<String>,ready:&str,bump:bool){let mut states=self.states.lock().await;let s=states.entry(id.into()).or_insert_with(||RunView{instance:id.into(),..Default::default()});s.state=state.into();s.pid=pid;s.error=error;s.readiness=ready.into();if bump{s.revision+=1;}let _=self.hub.tx.send(json!({"type":"state","data":s}));}
  pub async fn views(&self)->Vec<RunView>{self.states.lock().await.values().cloned().collect()}
  pub async fn project_active(&self,p:&Project)->bool{let s=self.states.lock().await;p.instances.iter().any(|i|s.get(&i.id).map(|v|["starting","running","building","stopping"].contains(&v.state.as_str())).unwrap_or(false))}
- pub async fn start(&self,p:Project,i:Instance)->Result<()> {
+ pub async fn start(&self,p:Project,i:Instance,store:Store)->Result<()> {
   let cfg=p.configs.iter().find(|c|c.id==i.config_id).cloned().ok_or_else(||Error("运行配置不存在".into()))?;
-  let key=format!("{}/{}",p.id,cfg.id);let mut groups=self.groups.lock().await;
+  let launch_store=store.clone();let key=format!("{}/{}",p.id,cfg.id);let mut groups=self.groups.lock().await;
   if let Some(s)=self.states.lock().await.get(&i.id){if ["starting","running","building","stopping"].contains(&s.state.as_str()){return fail("实例已经运行或正在处理中")}}
   if groups.get(&key).map(|g|g.tx.is_closed()).unwrap_or(false){groups.remove(&key);}
-  if !groups.contains_key(&key){let(tx,rx)=mpsc::channel(32);let(cancel,_)=watch::channel(0u64);groups.insert(key.clone(),Group{tx,cancel:cancel.clone(),project:p.id.clone()});let rt=self.clone();tokio::spawn(async move{rt.actor(p.root,cfg,rx,cancel).await;});}
+  if !groups.contains_key(&key){let(tx,rx)=mpsc::channel(32);let(cancel,_)=watch::channel(0u64);groups.insert(key.clone(),Group{tx,cancel:cancel.clone(),project:p.id.clone()});let rt=self.clone();tokio::spawn(async move{rt.actor(p,cfg,store,rx,cancel).await;});}
   self.state(&i.id,"starting",None,None,"等待启动",false).await;
-  if groups[&key].tx.try_send(Control::Start(i.clone())).is_err(){self.state(&i.id,"error",None,Some("操作队列已满".into()),"",false).await;return fail("操作队列已满，请稍后重试")};Ok(())
+  if groups[&key].tx.try_send(Control::Start(i.clone(),launch_store)).is_err(){self.state(&i.id,"error",None,Some("操作队列已满".into()),"",false).await;return fail("操作队列已满，请稍后重试")};Ok(())
  }
  pub async fn control(&self,p:&Project,i:&Instance,op:&str)->Result<()>{let key=format!("{}/{}",p.id,i.config_id);let groups=self.groups.lock().await;let g=groups.get(&key).ok_or_else(||Error("实例尚未运行".into()))?;if op=="stop"{g.cancel.send_modify(|v|*v+=1);g.tx.try_send(Control::Stop(i.id.clone())).map_err(|_|Error("控制队列已满".into()))?;}else{g.tx.try_send(Control::Update).map_err(|_|Error("控制队列已满".into()))?;}Ok(())}
  pub async fn forget_idle(&self,p:&Project)->Result<()> {if self.project_active(p).await{return fail("修改运行配置前请先停止本项目实例")};let mut groups=self.groups.lock().await;let keys:Vec<_>=groups.iter().filter(|(_,g)|g.project==p.id).map(|(k,_)|k.clone()).collect();for k in keys{if let Some(g)=groups.remove(&k){let _=g.tx.try_send(Control::Shutdown);}}Ok(())}
  pub async fn shutdown(&self){let groups=self.groups.lock().await;for g in groups.values(){g.cancel.send_modify(|v|*v+=1);let _=g.tx.send(Control::Shutdown).await;}}
- async fn build(&self,root:&std::path::Path,cfg:&RunConfig,cancel:&watch::Sender<u64>)->Result<()> {
+ async fn build(&self,project:&Project,cfg:&RunConfig,store:&Store,cancel:&watch::Sender<u64>)->Result<()> {
+  let root=&project.root;let cfg=crate::launch::resolve(store,project,cfg,None,true)?;
   if let Some(b)=&cfg.build{
    let mut cancelled=cancel.subscribe();
    let run=async{let _permit=self.builds.acquire().await.map_err(|e|Error(e.to_string()))?;let cwd=inside(root,&cfg.cwd)?;let c=process::command(b,&cwd,None,&[],&cfg.env)?;let o=process::capture(c,120,512*1024).await?;self.hub.log(&cfg.id,"build",&o.stdout).await;self.hub.log(&cfg.id,"build",&o.stderr).await;process::checked(o)?;Ok::<_,Error>(())};
    tokio::select!{r=run=>r,_=cancelled.changed()=>fail("构建已取消")}
   }else{Ok(())}
  }
- async fn launch(&self,root:&std::path::Path,cfg:&RunConfig,i:Instance)->Result<Running>{
+ async fn launch(&self,project:&Project,cfg:&RunConfig,store:&Store,i:Instance)->Result<Running>{
+  let root=&project.root;let cfg=crate::launch::resolve(store,project,cfg,Some(&i),true)?;
   if let Some(port)=i.port{if matches!(timeout(Duration::from_millis(200),tokio::net::TcpStream::connect(("127.0.0.1",port))).await,Ok(Ok(_))){return fail(format!("端口 {port} 已有监听程序，未启动实例"));}}
   let cwd=inside(root,&cfg.cwd)?;if !cwd.is_dir(){return fail("运行目录不存在")}
-  let mut env=cfg.env.clone();env.extend(i.env.clone());let cmd=process::command(&cfg.command,&cwd,i.port,&i.args,&env)?;let mut child=process::spawn(cmd)?;
+  let mut env=cfg.env.clone();if cfg.launcher.is_none(){env.extend(i.env.clone());}let extra=if cfg.launcher.is_some(){&[][..]}else{i.args.as_slice()};let cmd=process::command(&cfg.command,&cwd,i.port,extra,&env)?;let mut child=process::spawn(cmd)?;
   let mut readers=vec![];if let Some(o)=child.0.stdout().take(){let hub=self.hub.clone();let id=i.id.clone();readers.push(tokio::spawn(async move{pump(o,hub,id,"stdout").await}));}if let Some(e)=child.0.stderr().take(){let hub=self.hub.clone();let id=i.id.clone();readers.push(tokio::spawn(async move{pump(e,hub,id,"stderr").await}));}
   self.state(&i.id,if i.port.is_some(){"starting"}else{"running"},child.0.id(),None,if i.port.is_some(){"等待 TCP 端口"}else{"进程已启动；未配置应用就绪检查"},true).await;
   Ok(Running{child,readers,instance:i,deadline:Instant::now()+Duration::from_secs(30),ready:false})
  }
  async fn stop_run(&self,mut r:Running){self.state(&r.instance.id,"stopping",r.child.0.id(),None,"",false).await;let _=r.child.0.start_kill();let _=timeout(Duration::from_secs(3),r.child.0.wait()).await;for t in r.readers{t.abort();}self.state(&r.instance.id,"stopped",None,None,"",false).await;}
- async fn actor(self,root:PathBuf,cfg:RunConfig,mut rx:mpsc::Receiver<Control>,cancel:watch::Sender<u64>){
+ async fn actor(self,project:Project,cfg:RunConfig,mut store:Store,mut rx:mpsc::Receiver<Control>,cancel:watch::Sender<u64>){
+  let root=project.root.clone();
   let mut children:HashMap<String,Running>=HashMap::new();let(evtx,mut evrx)=mpsc::channel(1);let mut watcher:Option<RecommendedWatcher>=None;let mut watch_failed=false;
   loop{
    enum Event{Control(Option<Control>),Files,Tick}
    let event=tokio::select!{c=rx.recv()=>Event::Control(c),Some(_)=evrx.recv(),if !children.is_empty()=>Event::Files,_=tokio::time::sleep(Duration::from_millis(250)),if !children.is_empty()=>Event::Tick};
    match event{
     Event::Control(None)|Event::Control(Some(Control::Shutdown))=>break,
-    Event::Control(Some(Control::Start(i)))=>{
+    Event::Control(Some(Control::Start(i,snapshot)))=>{
+     store=snapshot;
      if children.contains_key(&i.id){continue}
-     let result=if children.is_empty(){self.build(&root,&cfg,&cancel).await}else{Ok(())};
-     match result{Ok(())=>match self.launch(&root,&cfg,i.clone()).await{Ok(r)=>{children.insert(i.id.clone(),r);},Err(e)=>self.state(&i.id,"error",None,Some(e.0),"",false).await},Err(e)=>self.state(&i.id,"error",None,Some(e.0),"",false).await}
+     let result=if children.is_empty(){self.build(&project,&cfg,&store,&cancel).await}else{Ok(())};
+     match result{Ok(())=>match self.launch(&project,&cfg,&store,i.clone()).await{Ok(r)=>{children.insert(i.id.clone(),r);},Err(e)=>self.state(&i.id,"error",None,Some(e.0),"",false).await},Err(e)=>self.state(&i.id,"error",None,Some(e.0),"",false).await}
     },
     Event::Control(Some(Control::Stop(id)))=>{if let Some(r)=children.remove(&id){self.stop_run(r).await;}else{self.state(&id,"stopped",None,None,"",false).await;}},
     Event::Files|Event::Control(Some(Control::Update))=>{
      if children.is_empty(){continue}tokio::time::sleep(Duration::from_millis(350)).await;while evrx.try_recv().is_ok(){}
      for r in children.values(){self.state(&r.instance.id,"building",r.child.0.id(),None,"旧进程保留，正在构建",false).await;}
-     match self.build(&root,&cfg,&cancel).await{
+     match self.build(&project,&cfg,&store,&cancel).await{
       Err(e)=>{for r in children.values(){self.state(&r.instance.id,"running",r.child.0.id(),Some(e.0.clone()),"构建失败；No-ide 未停止旧进程",false).await;}},
-      Ok(())=>{let old=std::mem::take(&mut children);for(_,r)in old{let i=r.instance.clone();self.stop_run(r).await;match self.launch(&root,&cfg,i.clone()).await{Ok(r)=>{children.insert(i.id.clone(),r);},Err(e)=>self.state(&i.id,"error",None,Some(e.0),"",false).await}}}
+      Ok(())=>{let old=std::mem::take(&mut children);for(_,r)in old{let i=r.instance.clone();self.stop_run(r).await;match self.launch(&project,&cfg,&store,i.clone()).await{Ok(r)=>{children.insert(i.id.clone(),r);},Err(e)=>self.state(&i.id,"error",None,Some(e.0),"",false).await}}}
      }
     },
     Event::Tick=>{

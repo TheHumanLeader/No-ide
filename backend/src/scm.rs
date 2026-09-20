@@ -83,27 +83,30 @@ pub fn redact(s:&str)->String {
  out
 }
 #[derive(Clone,Serialize)]pub struct Plan {
- pub token:String,pub project:String,pub repo:String,pub operation:String,pub paths:Vec<String>,pub message:String,pub destination:String,pub branch:String,
+ pub group:Option<String>,pub whole_files:bool,pub token:String,pub project:String,pub repo:String,pub operation:String,pub paths:Vec<String>,pub message:String,pub destination:String,pub branch:String,
  #[serde(skip)]pub fingerprint:String,#[serde(skip)]pub created:Option<Instant>,
 }
 #[derive(Default)]pub struct Plans{pub items:HashMap<String,Plan>}
 impl Plans{
- pub async fn prepare(&mut self,client:&Client,project:&str,operation:&str,mut paths:Vec<String>,message:&str)->Result<Plan>{
+ pub async fn prepare(&mut self,client:&Client,project:&str,operation:&str,mut paths:Vec<String>,message:&str,group:Option<&str>,whole_files:bool)->Result<Plan>{
   self.items.retain(|_,p|p.created.map(|t|t.elapsed()<Duration::from_secs(90)).unwrap_or(false));if self.items.len()>=16{return fail("待确认操作过多")}
   if !["stage","unstage","commit","pull","push","update","add"].contains(&operation){return fail("未支持此操作")}
   let s=client.status().await?;if s.files.iter().any(|f|f.conflict){return fail("工作副本存在冲突，请先处理冲突")}
   if client.kind=="svn"&&["stage","unstage","push","pull"].contains(&operation){return fail("SVN 没有 Git 暂存/推送语义，请使用添加、提交、更新")}
   if client.kind=="git"&&["add","update"].contains(&operation){return fail("Git 请使用暂存或拉取")}
   if ["pull","update"].contains(&operation)&&!s.files.is_empty(){return fail("为保护未提交修改，请先提交或自行保存改动后再更新；不会自动丢弃文件")}
-  if operation=="commit"{text(message.trim(),16000)?;if client.kind=="git"{paths=s.files.iter().filter(|f|f.staged).map(|f|f.path.clone()).collect();}}
+  if operation=="commit"{text(message.trim(),16000)?;if client.kind=="git"&&!whole_files{paths=s.files.iter().filter(|f|f.staged&&client.repo.groups.of(&f.path,f.original.as_deref())==group.unwrap_or(crate::groups::DEFAULT)).map(|f|f.path.clone()).collect();}}
+  let scope=if operation=="commit"{Some(group.unwrap_or(crate::groups::DEFAULT))}else{group};
+  if let Some(gid)=scope{client.repo.groups.name(gid)?;for path in &paths{let f=s.files.iter().find(|f|f.path==*path).ok_or_else(||Error("文件状态已变化".into()))?;if client.repo.groups.of(&f.path,f.original.as_deref())!=gid{return fail("所选文件属于其他分组，未执行。请按分组分别提交")}}}
   if ["stage","unstage","commit","add"].contains(&operation)&&paths.is_empty(){return fail("没有选择文件 / 暂存区为空")}
   if paths.len()>200{return fail("单次最多处理 200 个文件")}
   let mut seen=HashSet::new();paths.retain(|p|seen.insert(p.clone()));
   for p in &paths{if client.kind=="svn"&&p.contains('@'){return fail("本版暂不处理包含 @ 的 SVN 文件路径")};let target=vcs_path(&client.repo.path,p)?;if !s.files.iter().any(|f|f.path==*p){return fail("文件状态已改变，请刷新")};if target.is_dir(){return fail("请逐个选择文件，本版不递归提交整个目录")}}
   if ["push","pull"].contains(&operation){if s.remote.is_empty(){return fail("当前仓库未配置 origin")};if s.branch=="(detached HEAD)"{return fail("游离 HEAD 不能使用此操作")};}
+  if client.kind=="git"&&operation=="commit"&&!whole_files&&s.files.iter().any(|f|f.staged&&!paths.contains(&f.path)){return fail("暂存区还有其他分组文件。请使用本组整文件提交，或取消其他组的暂存；不会夹带提交")}
   let fingerprint=fingerprint(client,&s,&paths).await?;
   let destination=if client.kind=="git"&&operation=="commit"{"仅提交到本地仓库，不推送".into()}else if ["stage","unstage","add"].contains(&operation){"本地工作副本".into()}else{format!("{} · {}",if client.kind=="git"{"origin"}else{"SVN 服务器"},if operation=="push"{&s.push_remote}else{&s.remote})};
-  let plan=Plan{token:id(),project:project.into(),repo:client.repo.id.clone(),operation:operation.into(),paths,message:message.into(),destination,branch:s.branch,fingerprint,created:Some(Instant::now())};self.items.insert(plan.token.clone(),plan.clone());Ok(plan)
+  let plan=Plan{group:scope.map(str::to_string),whole_files,token:id(),project:project.into(),repo:client.repo.id.clone(),operation:operation.into(),paths,message:message.into(),destination,branch:s.branch,fingerprint,created:Some(Instant::now())};self.items.insert(plan.token.clone(),plan.clone());Ok(plan)
  }
  pub async fn execute(&mut self,client:&Client,token:&str)->Result<String>{
   let p=self.items.remove(token).ok_or_else(||Error("确认已过期或已使用，请重新检查操作".into()))?;
@@ -113,7 +116,11 @@ impl Plans{
   match(client.kind.as_str(),p.operation.as_str()){
    ("git","stage")=>{args.extend(["add","--"].map(String::from));args.extend(p.paths.clone());}
    ("git","unstage")=>{args.extend(["restore","--staged","--"].map(String::from));args.extend(p.paths.clone());}
-   ("git","commit")|("svn","commit")=>{let mut f=tempfile::NamedTempFile::new()?;f.write_all(p.message.as_bytes())?;f.flush()?;args.extend(["commit".into(),"-F".into(),f.path().to_string_lossy().into()]);if client.kind=="svn"{args.extend(["--depth".into(),"empty".into(),"--".into()]);args.extend(p.paths.clone());}message_file=Some(f);}
+   ("git","commit")|("svn","commit")=>{let mut f=tempfile::NamedTempFile::new()?;f.write_all(p.message.as_bytes())?;f.flush()?;args.extend(["commit".into(),"-F".into(),f.path().to_string_lossy().into()]);if client.kind=="git"&&p.whole_files{
+     let mut selected=p.paths.clone();for f in &s.files{if p.paths.contains(&f.path){if let Some(old)=&f.original{if client.repo.groups.of(old,None)!=p.group.as_deref().unwrap_or(crate::groups::DEFAULT){return fail("重命名两端的分组不一致，请先移入同一组")};if !selected.contains(old){selected.push(old.clone());}}}}
+     let mut add=vec!["add".into(),"--".into()];add.extend(selected.clone());process::checked(client.run_vec(add).await?)?;
+     args.push("--only".into());args.push("--".into());args.extend(selected);
+    }if client.kind=="svn"{args.extend(["--depth".into(),"empty".into(),"--".into()]);args.extend(p.paths.clone());}message_file=Some(f);}
    ("git","pull")=>args.extend(["pull","--ff-only","--no-rebase","origin",&p.branch].map(String::from)),
    ("git","push")=>args.extend(["push".into(),"--porcelain".into(),"origin".into(),format!("HEAD:refs/heads/{}",p.branch)]),
    ("svn","update")=>args.extend(["update","--ignore-externals","--accept","postpone"].map(String::from)),
@@ -124,8 +131,8 @@ impl Plans{
  }
 }
 async fn fingerprint(c:&Client,s:&Status,paths:&[String])->Result<String>{
- let mut h=Sha256::new();h.update(s.snapshot.as_bytes());h.update(c.executable.as_bytes());h.update(c.svn_config.as_deref().unwrap_or("").as_bytes());let mut total=0u64;let mut actual=0u64;
- for p in paths{h.update(p.as_bytes());let path=vcs_path(&c.repo.path,p)?;if path.is_file(){let n=path.metadata()?.len();total+=n;if total>16*1024*1024{return fail("待确认文件合计超过 16 MiB，本版不生成完整性确认")};let mut f=std::fs::File::open(path)?;let mut b=[0u8;8192];let mut read=0u64;loop{let n=f.read(&mut b)?;if n==0{break}read+=n as u64;actual+=n as u64;if read>16*1024*1024||actual>16*1024*1024{return fail("文件在读取时增长过大")}h.update(&b[..n]);}}else{h.update(b"<deleted-or-directory>");}}
+ let mut h=Sha256::new();h.update(serde_json::to_vec(&c.repo.groups)?);h.update(s.snapshot.as_bytes());h.update(c.executable.as_bytes());h.update(c.svn_config.as_deref().unwrap_or("").as_bytes());let mut total=0u64;let mut actual=0u64;
+ for p in paths{h.update(p.as_bytes());let path=vcs_path(&c.repo.path,p)?;if path.is_file(){let n=path.metadata()?.len();total+=n;if total>16*1024*1024{return fail("待确认文件合计超过 16 MiB，本版不生成完整性确认")};let mut f=std::fs::File::open(path)?;let mut b=[0u8;8192];let mut read=0u64;loop{let n=f.read(&mut b)?;if n==0{break}read+=n as u64;actual+=n as u64;if read>16*1024*1024||actual>16*1024*1024{return fail("文件在读取时增长过大")};h.update(&b[..n]);}}else{h.update(b"<deleted-or-directory>");}}
  Ok(format!("{:x}",h.finalize()))
 }
 #[cfg(test)]mod tests{
