@@ -7,3 +7,8 @@ dist/
 !.env.example
 playwright-report/
 test-results/
+backend/target/
+packages/
+__pycache__/
+source.zip
+native-source.zip

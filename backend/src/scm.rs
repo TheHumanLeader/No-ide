@@ -5,7 +5,7 @@ use tokio::process::Command;
 use sha2::{Sha256,Digest};
 const LIMIT:usize=1024*1024;
 #[derive(Clone,Serialize,Deserialize)]pub struct Change{pub path:String,pub status:String,pub staged:bool,pub worktree:bool,pub conflict:bool,pub original:Option<String>}
-#[derive(Clone,Serialize)]pub struct Status{pub kind:String,pub branch:String,pub remote:String,pub files:Vec<Change>,pub snapshot:String}
+#[derive(Clone,Serialize)]pub struct Status{pub kind:String,pub branch:String,pub remote:String,pub push_remote:String,pub files:Vec<Change>,pub snapshot:String}
 #[derive(Clone)]pub struct Client{pub kind:String,pub executable:String,pub repo:Repo,pub svn_config:Option<String>}
 impl Client{
  pub async fn new(s:&Store,p:&Project,r:&Repo)->Result<Self>{
@@ -14,7 +14,7 @@ impl Client{
  }
  fn command(&self,args:&[String])->Command{
   let mut c=Command::new(&self.executable);c.current_dir(&self.repo.path);
-  c.env("GIT_TERMINAL_PROMPT","0").env("GCM_INTERACTIVE","Never").env("LC_ALL","C");
+  c.env("GIT_TERMINAL_PROMPT","0").env("GCM_INTERACTIVE","Never");
   if self.kind=="git"{c.args(["--no-pager","--literal-pathspecs","-c","color.ui=false","-c","core.quotePath=false"]);}else{c.args(["--non-interactive","--no-auth-cache"]);if let Some(d)=&self.svn_config{c.args(["--config-dir",d]);}}
   c.args(args);c
  }
@@ -29,7 +29,8 @@ impl Client{
    let h=self.run(&["rev-parse","--verify","HEAD"]).await?;
    let index=self.read(&["diff","--cached","--raw","--no-abbrev","--no-renames"]).await?;
    let remote=self.run(&["remote","get-url","origin"]).await?;let remote=if remote.code==0{remote.stdout.trim().to_string()}else{String::new()};
-   let snapshot=digest(&[&raw,&index,&h.stdout,&branch,&remote]);Ok(Status{kind:"git".into(),branch,remote:redact(&remote),files,snapshot})
+   let push=self.run(&["remote","get-url","--push","--all","origin"]).await?;let push_remote=if push.code==0{push.stdout.trim().to_string()}else{String::new()};
+   let snapshot=digest(&[&raw,&index,&h.stdout,&branch,&remote,&push_remote]);Ok(Status{kind:"git".into(),branch,remote:redact(&remote),push_remote:redact(&push_remote),files,snapshot})
   }else{
    let raw=self.read(&["status","--xml","--ignore-externals"]).await?;
    let files=parse_svn(&raw)?;let info=self.read(&["info","--xml","--depth","empty","."]).await?;
@@ -37,7 +38,7 @@ impl Client{
    let entry=doc.descendants().find(|n|n.has_tag_name("entry")).ok_or_else(||Error("无法读取 SVN 元数据".into()))?;
    let branch=format!("r{}",entry.attribute("revision").unwrap_or("?"));
    let remote=doc.descendants().find(|n|n.has_tag_name("url")).and_then(|n|n.text()).unwrap_or("").to_string();
-   Ok(Status{kind:"svn".into(),branch,remote:redact(&remote),files,snapshot:digest(&[&raw,&info])})
+   Ok(Status{kind:"svn".into(),branch,push_remote:redact(&remote),remote:redact(&remote),files,snapshot:digest(&[&raw,&info])})
   }
  }
  pub async fn diff(&self,path:&str,staged:bool)->Result<String>{
@@ -46,7 +47,7 @@ impl Client{
   if f.status=="??"||f.status=="unversioned"{
    if !target.is_file(){return fail("未跟踪目录请逐个添加文件；不递归展开")}
    if target.metadata()?.len()>512*1024{return fail("文件超过 512 KiB，未加载")}
-   let b=std::fs::read(target)?;if b.contains(&0){return fail("二进制文件暂不显示文本差异")}
+   let mut b=Vec::new();std::fs::File::open(target)?.take(512*1024+1).read_to_end(&mut b)?;if b.len()>512*1024{return fail("文件超过 512 KiB，未加载")};if b.contains(&0){return fail("二进制文件暂不显示文本差异")}
    let s=String::from_utf8(b).map_err(|_|Error("文件不是 UTF-8，暂不显示文本差异".into()))?;
    return Ok(format!("--- /dev/null\n+++ {path}\n{}",s.lines().map(|l|format!("+{l}\n")).collect::<String>()));
   }
@@ -88,7 +89,7 @@ impl Plans{
   for p in &paths{let target=vcs_path(&client.repo.path,p)?;if !s.files.iter().any(|f|f.path==*p){return fail("文件状态已改变，请刷新")};if target.is_dir(){return fail("请逐个选择文件，本版不递归提交整个目录")}}
   if ["push","pull"].contains(&operation){if s.remote.is_empty(){return fail("当前仓库未配置 origin")};if s.branch=="(detached HEAD)"{return fail("游离 HEAD 不能使用此操作")};}
   let fingerprint=fingerprint(client,&s,&paths).await?;
-  let destination=if client.kind=="git"&&operation=="commit"{"仅提交到本地仓库，不推送".into()}else if ["stage","unstage","add"].contains(&operation){"本地工作副本".into()}else{format!("{} · {}",if client.kind=="git"{"origin"}else{"SVN 服务器"},s.remote)};
+  let destination=if client.kind=="git"&&operation=="commit"{"仅提交到本地仓库，不推送".into()}else if ["stage","unstage","add"].contains(&operation){"本地工作副本".into()}else{format!("{} · {}",if client.kind=="git"{"origin"}else{"SVN 服务器"},if operation=="push"{&s.push_remote}else{&s.remote})};
   let plan=Plan{token:id(),project:project.into(),repo:client.repo.id.clone(),operation:operation.into(),paths,message:message.into(),destination,branch:s.branch,fingerprint,created:Some(Instant::now())};self.items.insert(plan.token.clone(),plan.clone());Ok(plan)
  }
  pub async fn execute(&mut self,client:&Client,token:&str)->Result<String>{
@@ -110,8 +111,8 @@ impl Plans{
  }
 }
 async fn fingerprint(c:&Client,s:&Status,paths:&[String])->Result<String>{
- let mut h=Sha256::new();h.update(s.snapshot.as_bytes());let mut total=0u64;
- for p in paths{h.update(p.as_bytes());let path=vcs_path(&c.repo.path,p)?;if path.is_file(){let n=path.metadata()?.len();total+=n;if total>16*1024*1024{return fail("待确认文件合计超过 16 MiB，本版不生成完整性确认")};let mut f=std::fs::File::open(path)?;let mut b=[0u8;8192];let mut read=0u64;loop{let n=f.read(&mut b)?;if n==0{break}read+=n as u64;if read>16*1024*1024{return fail("文件在读取时增长过大")}h.update(&b[..n]);}}else{h.update(b"<deleted-or-directory>");}}
+ let mut h=Sha256::new();h.update(s.snapshot.as_bytes());h.update(c.executable.as_bytes());h.update(c.svn_config.as_deref().unwrap_or("").as_bytes());let mut total=0u64;let mut actual=0u64;
+ for p in paths{h.update(p.as_bytes());let path=vcs_path(&c.repo.path,p)?;if path.is_file(){let n=path.metadata()?.len();total+=n;if total>16*1024*1024{return fail("待确认文件合计超过 16 MiB，本版不生成完整性确认")};let mut f=std::fs::File::open(path)?;let mut b=[0u8;8192];let mut read=0u64;loop{let n=f.read(&mut b)?;if n==0{break}read+=n as u64;actual+=n as u64;if read>16*1024*1024||actual>16*1024*1024{return fail("文件在读取时增长过大")}h.update(&b[..n]);}}else{h.update(b"<deleted-or-directory>");}}
  Ok(format!("{:x}",h.finalize()))
 }
 #[cfg(test)]mod tests{

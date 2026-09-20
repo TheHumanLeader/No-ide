@@ -15,7 +15,7 @@ impl Hub{
  pub async fn logs(&self)->Vec<Log>{self.logs.lock().await.rows.iter().cloned().collect()}
 }
 #[derive(Clone)]pub struct Runtime{groups:Arc<Mutex<HashMap<String,Group>>>,pub states:Arc<Mutex<HashMap<String,RunView>>>,pub hub:Arc<Hub>,builds:Arc<Semaphore>}
-#[derive(Clone)]struct Group{tx:mpsc::Sender<Control>,cancel:watch::Sender<u64>,project:String,config:String}
+#[derive(Clone)]struct Group{tx:mpsc::Sender<Control>,cancel:watch::Sender<u64>,project:String}
 enum Control{Start(Instance),Stop(String),Update,Shutdown}
 struct Running{child:process::Managed,readers:Vec<tokio::task::JoinHandle<()>>,instance:Instance,deadline:Instant,ready:bool}
 impl Runtime{
@@ -28,7 +28,7 @@ impl Runtime{
   let key=format!("{}/{}",p.id,cfg.id);let mut groups=self.groups.lock().await;
   if let Some(s)=self.states.lock().await.get(&i.id){if ["starting","running","building","stopping"].contains(&s.state.as_str()){return fail("实例已经运行或正在处理中")}}
   if groups.get(&key).map(|g|g.tx.is_closed()).unwrap_or(false){groups.remove(&key);}
-  if !groups.contains_key(&key){let(tx,rx)=mpsc::channel(32);let(cancel,_)=watch::channel(0u64);groups.insert(key.clone(),Group{tx,cancel:cancel.clone(),project:p.id.clone(),config:cfg.id.clone()});let rt=self.clone();tokio::spawn(async move{rt.actor(p.root,cfg,rx,cancel).await;});}
+  if !groups.contains_key(&key){let(tx,rx)=mpsc::channel(32);let(cancel,_)=watch::channel(0u64);groups.insert(key.clone(),Group{tx,cancel:cancel.clone(),project:p.id.clone()});let rt=self.clone();tokio::spawn(async move{rt.actor(p.root,cfg,rx,cancel).await;});}
   self.state(&i.id,"starting",None,None,"等待启动",false).await;
   if groups[&key].tx.try_send(Control::Start(i.clone())).is_err(){self.state(&i.id,"error",None,Some("操作队列已满".into()),"",false).await;return fail("操作队列已满，请稍后重试")};Ok(())
  }
@@ -43,7 +43,7 @@ impl Runtime{
   }else{Ok(())}
  }
  async fn launch(&self,root:&std::path::Path,cfg:&RunConfig,i:Instance)->Result<Running>{
-  if let Some(port)=i.port{let probe=std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,port)).map_err(|_|Error(format!("端口 {port} 已被占用，未启动实例")))?;drop(probe);}
+  if let Some(port)=i.port{if matches!(timeout(Duration::from_millis(200),tokio::net::TcpStream::connect(("127.0.0.1",port))).await,Ok(Ok(_))){return fail(format!("端口 {port} 已有监听程序，未启动实例"));}}
   let cwd=inside(root,&cfg.cwd)?;if !cwd.is_dir(){return fail("运行目录不存在")}
   let mut env=cfg.env.clone();env.extend(i.env.clone());let cmd=process::command(&cfg.command,&cwd,i.port,&i.args,&env)?;let mut child=process::spawn(cmd)?;
   let mut readers=vec![];if let Some(o)=child.0.stdout().take(){let hub=self.hub.clone();let id=i.id.clone();readers.push(tokio::spawn(async move{pump(o,hub,id,"stdout").await}));}if let Some(e)=child.0.stderr().take(){let hub=self.hub.clone();let id=i.id.clone();readers.push(tokio::spawn(async move{pump(e,hub,id,"stderr").await}));}

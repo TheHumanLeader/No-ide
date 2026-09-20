@@ -14,7 +14,6 @@ pub fn spawn(mut c:Command)->Result<Managed>{
 }
 #[derive(serde::Serialize)]
 pub struct Output {pub code:i32,pub stdout:String,pub stderr:String}
-/// Streaming read with a hard byte limit: no read_to_end / unbounded line buffer.
 async fn limited<R:AsyncRead+Unpin>(mut r:R,max:usize)->Result<Vec<u8>>{
  let mut out=Vec::new();let mut b=[0u8;4096];loop{let n=r.read(&mut b).await?;if n==0{break}if out.len()+n>max{return fail("输出超过上限；操作结果需刷新确认，未自动重试")};out.extend_from_slice(&b[..n]);}Ok(out)
 }
@@ -34,7 +33,7 @@ pub fn command(spec:&CommandSpec,cwd:&Path,port:Option<u16>,extra:&[String],env:
  validate_command(spec)?;validate_env(env)?;
  let replace=|s:&str|->Result<String>{if s.contains("{port}")&&port.is_none(){return fail("命令包含 {port}，请设置实例端口")}Ok(s.replace("{port}",&port.map(|p|p.to_string()).unwrap_or_default()))};
  let raw=Path::new(&spec.program);
- let program=if raw.is_relative()&&raw.components().count()>1{cwd.join(raw)}else{raw.to_path_buf()};
+ let program=if raw.is_relative()&&(raw.components().count()>1||cwd.join(raw).is_file()){cwd.join(raw)}else{raw.to_path_buf()};
  let mut c=Command::new(program);c.current_dir(cwd);
  for a in spec.args.iter().chain(extra){c.arg(replace(a)?);}for(k,v)in env{c.env(k,replace(v)?);}
  if let Some(p)=port{c.env("PORT",p.to_string());}Ok(c)
