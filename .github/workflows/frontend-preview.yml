@@ -22,6 +22,8 @@ jobs:
         run: npm install --no-audit --no-fund
       - name: Check JavaScript
         run: npm run check
+      - name: Test project model and bounded diff
+        run: npm test
       - name: Build real Quasar frontend
         run: npm run build
       - name: Build self-contained Quasar preview

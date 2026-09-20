@@ -8,6 +8,7 @@ Never includes font files or accesses the network.
 from pathlib import Path
 import argparse
 import re
+import json
 
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
@@ -26,7 +27,17 @@ if not args.offline_controls and not (args.quasar_js and args.quasar_css):
 code = (root / 'src/app.js').read_text(encoding='utf-8')
 code = re.sub(r"import \{([^}]+)\} from 'vue'", r'const {\1} = Vue', code, count=1)
 code = code.replace('export function createNoIdeApp()', 'function createNoIdeApp()')
+code = re.sub(r"^import .+ from './(?:project-model|source-control|catalog)\.js'\n", '', code, flags=re.M)
+code=re.sub(r"^import appTemplate from './layout.html\?raw'\n", '', code, flags=re.M)
+modules=['const appTemplate = '+json.dumps((root/'src/layout.html').read_text(encoding='utf-8'),ensure_ascii=False)+';']
+for name in ['catalog.js','project-model.js','source-control.js']:
+    module=(root / 'src' / name).read_text(encoding='utf-8')
+    module=re.sub(r"^import .+ from 'vue'\n", '', module, flags=re.M)
+    module=re.sub(r'^export ', '', module, flags=re.M)
+    modules.append(module)
+code='\n'.join(modules)+'\n'+code
 css = (root / 'src/styles.css').read_text(encoding='utf-8') + '\n' + (root / 'src/quasar-overrides.css').read_text(encoding='utf-8')
+css += '\n' + (root / 'src/projects.css').read_text(encoding='utf-8') + '\n' + (root / 'src/source-control.css').read_text(encoding='utf-8')
 vue = args.vue.read_text(encoding='utf-8')
 if args.offline_controls:
     code = code.replace('示例项目与数据 · 未连接本地执行器', '示例数据 · 离线交互版 · 执行器未连接')

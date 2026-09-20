@@ -1,0 +1,47 @@
+/* v0.2: project ownership, grouped instances and directory-first creation. */
+.workspace-switch select{width:132px;border:0;background:none;font-size:12px;font-weight:600;color:#56647b;cursor:pointer;padding:0;outline-offset:4px}
+.sidebar .pinned-project.chosen{background:var(--accent-soft);border-radius:6px;color:var(--accent)}
+.pinned-project span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sidebar-projects{max-height:28vh;overflow:auto}
+.project-context{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 15px;border:1px solid #e9edf4;border-radius:9px;margin-bottom:15px;background:#fff}
+.project-context>div{display:flex;align-items:center;gap:10px;color:#8393a9;min-width:0}
+.project-context strong{font-size:12px;color:#64778f;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.project-context span{font-size:10px;color:#93a1b4;white-space:nowrap}
+.project-context>button{display:flex;align-items:center;gap:7px;color:var(--accent);font-size:11px;white-space:nowrap}
+.grouped-list{min-height:345px;max-height:495px;overflow:auto;padding-top:0}
+.group-caption{display:flex;align-items:center;gap:8px;margin:8px 5px 3px;padding:5px 7px;border-top:1px solid #f0f2f6}
+.instance-group:first-child .group-caption{border-top:0}
+.group-caption>span{font-size:11px;font-weight:600;color:#778ba3}
+.group-caption small{font-size:9px;color:#99a9bd}
+.group-caption button{display:flex;align-items:center;justify-content:center;margin-left:auto;height:23px;width:23px;background:#f7f9fc;border-radius:5px;color:#8d9cb0}
+.grouped-list .service-row{min-height:54px;padding-top:8px;padding-bottom:8px}
+.service-main .service-meta>span:first-child{overflow:hidden;text-overflow:ellipsis;max-width:120px}
+.detail-title{flex:1;min-width:0}.detail-title h2{overflow-wrap:anywhere}
+.detail-header>.row-action{flex-shrink:0}
+.empty-project-detail{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:35px;text-align:center;gap:17px;color:#9cacc3}
+.empty-project-detail h2{font-size:16px;color:#7e90aa}
+.empty-project-detail p{font-size:12px;line-height:1.9;max-width:320px}
+.project-source-tabs{display:inline-flex;margin-bottom:19px}
+.field-title{display:block;color:#8592a8;font-size:11px;font-weight:500;margin-bottom:7px}
+.directory-picker{margin-bottom:18px}
+.folder-choice{border:1px dashed #d8e0ed;background:#fafbfd;border-radius:9px;display:flex;align-items:center;gap:10px;padding:14px 12px;min-width:0}
+.folder-choice.chosen{border-style:solid;border-color:var(--accent-line);background:var(--accent-soft)}
+.folder-choice .folder-glyph{font-size:29px;color:var(--accent);line-height:1}
+.folder-choice>div{flex:1;min-width:0}.folder-choice strong{font-size:12px;color:#6d7c93;font-weight:550;display:block;overflow:hidden;text-overflow:ellipsis}
+.folder-choice small{display:block;font-size:10px;color:#98a6ba;margin-top:4px;line-height:1.6}
+.folder-choice .pick-folder{font-size:11px;background:#fff;border:1px solid #e0e7f1;border-radius:6px;padding:7px 10px;color:var(--accent);flex-shrink:0}
+.folder-privacy{font-size:10px!important;color:#96a4b9;margin:7px 0 0!important;line-height:1.8!important}
+.directory-picker input[hidden]{display:none!important}
+.modal label textarea,.config-form textarea{width:100%;border:1px solid #e3e8f0;border-radius:6px;padding:9px;min-height:66px;font-size:11px;color:#7a8a9f;resize:vertical}
+.inherit-folder{display:flex;align-items:center;gap:7px;font-size:11px;color:#8f9fb5;background:#f6f8fc;padding:10px;border-radius:6px;margin-bottom:11px}
+.optional-folder{margin-bottom:16px}.optional-folder summary{font-size:10px;color:var(--accent);cursor:pointer;padding:3px 0}.optional-folder[open] .directory-picker{margin-top:10px}
+.instance-port-note{font-size:10px;color:#9ba9bd;line-height:1.8;margin:-4px 0 15px}
+.shared-config-note{font-size:10px;line-height:1.8;background:var(--accent-soft);border:1px solid var(--accent-line);border-radius:6px;color:var(--accent);padding:9px;margin-bottom:14px}
+.readonly-folder{display:flex;align-items:center;gap:7px;border:1px solid #e5ebf3;border-radius:5px;padding:7px;color:#8b9ab0;margin-top:5px}
+.readonly-folder span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;font-size:10px}
+.readonly-folder button{font-size:10px;color:var(--accent);white-space:nowrap}
+.project-cards .project-card-tags{flex-wrap:wrap}.project-card h2{overflow-wrap:anywhere}
+.config-form{max-height:515px;overflow:auto}
+@media(max-width:1170px){.workspace-switch select{width:117px}.service-main .service-meta>span:first-child{max-width:96px}.grouped-list .service-title strong{font-size:11px}}
+@media(max-width:820px){.grouped-list{max-height:420px}.empty-project-detail{min-height:220px}.project-context>div{flex-wrap:wrap;gap:6px}.project-context strong{font-size:12px}.grouped-list .service-title strong{font-size:12px}}
+@media(max-width:600px){.project-context{align-items:flex-start;padding:12px}.project-context>div{max-width:70%}.project-context>div>span{width:100%;font-size:9px;margin-left:23px;white-space:normal}.project-context>button{font-size:10px}.grouped-list{max-height:425px}.grouped-list .service-title strong{font-size:11px}.service-main .service-meta>span:first-child{max-width:94px}.folder-choice{padding:11px 9px;gap:6px}.folder-choice .pick-folder{padding:7px;font-size:10px}.folder-choice strong{font-size:11px}.folder-choice small{font-size:9px}.empty-project-detail h2{font-size:14px}.project-source-tabs button{font-size:11px}.sidebar.mobile-open .workspace-switch select{width:136px}}

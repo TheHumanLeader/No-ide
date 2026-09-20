@@ -3,6 +3,8 @@ import { Quasar, QBtn, QToggle } from 'quasar'
 import 'quasar/dist/quasar.prod.css'
 import './styles.css'
 import './quasar-overrides.css'
+import './projects.css'
+import './source-control.css'
 import { createNoIdeApp } from './app.js'
 
 createApp(createNoIdeApp()).use(Quasar, {
