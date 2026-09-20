@@ -1,6 +1,6 @@
 use crate::core::*;
 use process_wrap::tokio::*;
-use tokio::{process::Command,io::{AsyncRead,AsyncReadExt,AsyncWriteExt},time::{timeout,Duration}};
+use tokio::{process::Command,io::{AsyncRead,AsyncReadExt},time::{timeout,Duration}};
 use std::{path::Path,process::Stdio};
 
 pub struct Managed(pub Box<dyn ChildWrapper>);
@@ -9,7 +9,7 @@ pub fn spawn(mut c:Command)->Result<Managed>{
  c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
  let mut c=CommandWrap::from(c);c.wrap(KillOnDrop);
  #[cfg(unix)]{c.wrap(ProcessGroup::leader());}
- #[cfg(windows)]{c.wrap(CreationFlags(0x08000000));c.wrap(JobObject);}
+ #[cfg(windows)]{c.wrap(CreationFlags(windows::Win32::System::Threading::CREATE_NO_WINDOW));c.wrap(JobObject);}
  Ok(Managed(c.spawn()?))
 }
 #[derive(serde::Serialize)]

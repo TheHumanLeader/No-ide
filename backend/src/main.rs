@@ -31,7 +31,7 @@ async fn events(State(s):State<Arc<App>>,ws:WebSocketUpgrade)->Response{
   let initial=json!({"type":"snapshot","states":s.runtime.views().await,"logs":s.runtime.hub.logs().await});
   if socket.send(Message::Text(initial.to_string().into())).await.is_err(){return}
   loop{tokio::select!{
-   event=rx.recv()=>{match event{Ok(v)=>{if tokio::time::timeout(std::time::Duration::from_secs(3),socket.send(Message::Text(v.to_string().into()))).await.map(|r|r.is_err()).unwrap_or(true){break}},Err(_)=>{let _=socket.close().await;break}}},
+   event=rx.recv()=>{match event{Ok(v)=>{if tokio::time::timeout(std::time::Duration::from_secs(3),socket.send(Message::Text(v.to_string().into()))).await.map(|r|r.is_err()).unwrap_or(true){break}},Err(_)=>{break}}},
    m=socket.recv()=>{match m{None|Some(Err(_))|Some(Ok(Message::Close(_)))=>break,_=>{}}}
   }}
  }).into_response()
@@ -39,7 +39,14 @@ async fn events(State(s):State<Arc<App>>,ws:WebSocketUpgrade)->Response{
 async fn call(State(s):State<Arc<App>>,Json(call):Json<Call>)->Result<Json<Value>>{
  let v=&call.params;let result=match call.action.as_str(){
   "state"=>json!({"store":s.store.lock().await.clone(),"runs":s.runtime.views().await}),
-  "tools.detect"=>{let tools=s.store.lock().await.tools.clone();let(git,svn)=tokio::join!(tools::detect("git",tools.git.as_ref()),tools::detect("svn",tools.svn.as_ref()));json!({"git":git,"svn":svn})},
+  "tools.detect"=>{
+   let store=s.store.lock().await.clone();let mut effective=store.tools.clone();let mut overrides=ToolSettings::default();
+   if let Some(pid)=v["project"].as_str(){overrides=store.project(pid)?.tools;effective.git=overrides.git.clone().or(effective.git);effective.svn=overrides.svn.clone().or(effective.svn);}
+   let(mut git,mut svn)=tokio::join!(tools::detect("git",effective.git.as_ref()),tools::detect("svn",effective.svn.as_ref()));
+   if overrides.git.is_some(){if let Some(c)=&mut git.selected{c.source="项目指定".into();}}
+   if overrides.svn.is_some(){if let Some(c)=&mut svn.selected{c.source="项目指定".into();}}
+   json!({"git":git,"svn":svn})
+  },
   "tools.save"=>{
    let _guard=s.writes.lock().await;let mut settings:ToolSettings=val(&v["settings"])?;
    for p in [&mut settings.git,&mut settings.svn,&mut settings.svn_config_dir]{if p.as_ref().map(|s|s.trim().is_empty()).unwrap_or(false){*p=None}}

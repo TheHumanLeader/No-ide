@@ -62,6 +62,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
+          cache-on-failure: true
+      - name: Linux build dependencies and SVN test client
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y libwayland-dev subversion
+      - name: macOS SVN test client
+        if: runner.os == 'macOS'
+        run: brew list subversion >/dev/null 2>&1 || brew install subversion
+      - name: Windows SVN test client
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install sliksvn -y --no-progress
       - run: cargo test --manifest-path backend/Cargo.toml --all-targets
       - run: cargo build --manifest-path backend/Cargo.toml --release
       - uses: actions/download-artifact@v4
@@ -70,6 +81,16 @@ jobs:
           path: dist
       - name: Real API and process smoke test
         run: python tests/backend-smoke.py
+      - name: Format and archive native source with dependency lock
+        if: always()
+        run: |
+          cargo fmt --manifest-path backend/Cargo.toml
+          python -c "from pathlib import Path; import zipfile; r=Path('backend'); z=zipfile.ZipFile('native-source.zip','w',zipfile.ZIP_DEFLATED); [z.write(p) for p in [r/'Cargo.toml',r/'Cargo.lock',*r.glob('src/*.rs')] if p.is_file()]; z.close()"
+      - uses: actions/upload-artifact@v4
+        if: always() && runner.os == 'Linux'
+        with:
+          name: formatted-native-source
+          path: native-source.zip
       - name: Package executable and local web app
         run: python scripts/package-native.py '${{ matrix.label }}'
       - uses: actions/upload-artifact@v4
