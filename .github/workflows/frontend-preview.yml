@@ -30,8 +30,56 @@ jobs:
           cp node_modules/quasar/LICENSE dist/QUASAR-LICENSE
           cp node_modules/vue/LICENSE dist/VUE-LICENSE
           cp package-lock.json dist/dependency-lock.json
+          touch dist/.nojekyll
       - uses: actions/upload-artifact@v4
         with:
           name: no-ide-frontend
           path: dist/
           retention-days: 7
+      - name: Upload GitHub Pages site
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist/
+
+  deploy:
+    name: Deploy to GitHub Pages
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: github-pages
+      cancel-in-progress: true
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # First-time setup: Settings > Pages > Source > GitHub Actions.
+      # Enabling Pages requires repository administration, not a broader CI token.
+      - name: Check GitHub Pages configuration
+        id: pages
+        uses: actions/configure-pages@v5
+      - name: Deploy frontend
+        id: deployment
+        uses: actions/deploy-pages@v4
+      - name: Write deployment result
+        if: success()
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          echo "## No-ide 前端已部署" >> "$GITHUB_STEP_SUMMARY"
+          echo "打开：$PAGE_URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "这是前端交互预览，未连接本地执行器。" >> "$GITHUB_STEP_SUMMARY"
+      - name: Explain first-time setup
+        if: failure() && steps.pages.outcome == 'failure'
+        run: |
+          echo "## GitHub Pages 尚未就绪" >> "$GITHUB_STEP_SUMMARY"
+          echo "请在仓库 Settings → Pages → Build and deployment → Source 中选择 GitHub Actions。" >> "$GITHUB_STEP_SUMMARY"
+          echo "设置入口：https://github.com/TheHumanLeader/No-ide/settings/pages" >> "$GITHUB_STEP_SUMMARY"
+          echo "设置完成后重试此部署任务（Re-run failed jobs），或重新运行此工作流。" >> "$GITHUB_STEP_SUMMARY"
+          echo "构建成功不等于网站上线；以 Deploy frontend 步骤成功和实际网址可访问为准。" >> "$GITHUB_STEP_SUMMARY"
