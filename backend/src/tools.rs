@@ -11,16 +11,17 @@ pub fn candidates(kind:&str)->Vec<(PathBuf,String)> {
   for key in ["ProgramFiles","ProgramFiles(x86)","LOCALAPPDATA"]{if let Some(v)=std::env::var_os(key){for sub in ["Git/cmd","Git/bin","Programs/Git/cmd","TortoiseSVN/bin","SlikSvn/bin","VisualSVN/bin"]{list.push((PathBuf::from(&v).join(sub).join(&name),"常见安装目录".into()));}}}
  }
  #[cfg(unix)]{for d in ["/opt/homebrew/bin","/usr/local/bin","/usr/bin","/bin","/opt/local/bin"]{list.push((Path::new(d).join(&name),"常见安装目录".into()));}}
- let mut seen=HashSet::new();list.into_iter().filter_map(|(p,s)|p.canonicalize().ok().map(|p|(p,s))).filter(|(p,_)|p.is_file()&&seen.insert(p.clone())).take(12).collect()
+ let mut seen=HashSet::new();list.into_iter().filter_map(|(p,s)|p.canonicalize().ok().map(|p|(native_path(p),s))).filter(|(p,_)|p.is_file()&&seen.insert(p.clone())).take(12).collect()
 }
 pub async fn verify(kind:&str,path:&str,source:&str)->Result<Candidate>{
  if !["git","svn"].contains(&kind){return fail("未知客户端")}
  let p=Path::new(path);if !p.is_absolute()||!p.is_file(){return fail("客户端路径必须是存在的绝对文件路径")}
- let mut c=Command::new(p);c.arg("--version");if kind=="svn"{c.arg("--quiet");}
+ let p=native_path(p.canonicalize()?);
+ let mut c=Command::new(&p);c.arg("--version");if kind=="svn"{c.arg("--quiet");}
  c.current_dir(std::env::temp_dir());c.env("GIT_TERMINAL_PROMPT","0");
  let o=process::capture(c,4,16384).await?;let version=process::checked(o)?.trim().to_string();
  if (kind=="git"&&!version.starts_with("git version "))||(kind=="svn"&&!version.starts_with(|c:char|c.is_ascii_digit())){return fail("文件可运行，但版本输出不匹配客户端类型")}
- Ok(Candidate{path:p.canonicalize()?.to_string_lossy().into(),version,source:source.into()})
+ Ok(Candidate{path:p.to_string_lossy().into(),version,source:source.into()})
 }
 pub async fn detect(kind:&str,manual:Option<&String>)->ToolReport{
  let mut report=ToolReport{kind:kind.into(),..Default::default()};

@@ -4,8 +4,7 @@ use std::{collections::BTreeMap, path::{Component, Path, PathBuf}};
 use std::io::Write;
 
 pub type Result<T> = std::result::Result<T, Error>;
-#[derive(Debug)]
-pub struct Error(pub String);
+#[derive(Debug)]pub struct Error(pub String);
 impl std::fmt::Display for Error { fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {self.0.fmt(f)} }
 impl std::error::Error for Error {}
 impl From<std::io::Error> for Error { fn from(e:std::io::Error)->Self {Self(e.to_string())} }
@@ -15,26 +14,29 @@ pub fn fail<T>(s:impl Into<String>)->Result<T> {Err(Error(s.into()))}
 pub fn id()->String {uuid::Uuid::new_v4().to_string()}
 pub fn text(s:&str,max:usize)->Result<()> {if s.is_empty()||s.len()>max||s.contains('\0'){fail("字段为空、过长或包含无效字符")}else{Ok(())}}
 
+/// External Windows tools commonly expect a DOS/UNC path, not a verbatim prefix.
+pub fn native_path(p:PathBuf)->PathBuf {
+ #[cfg(windows)]{
+  let s=p.to_string_lossy();
+  if let Some(tail)=s.strip_prefix(r"\\?\UNC\"){return PathBuf::from(format!(r"\\{}",tail));}
+  if let Some(tail)=s.strip_prefix(r"\\?\"){return PathBuf::from(tail);}
+ }
+ p
+}
 #[derive(Clone,Default,Serialize,Deserialize)]
-#[serde(default)]
-pub struct ToolSettings { pub git:Option<String>, pub svn:Option<String>, pub svn_config_dir:Option<String> }
+#[serde(default)]pub struct ToolSettings { pub git:Option<String>, pub svn:Option<String>, pub svn_config_dir:Option<String> }
 #[derive(Clone,Default,Serialize,Deserialize)]
-#[serde(default)]
-pub struct Store { pub tools:ToolSettings, pub projects:Vec<Project> }
-#[derive(Clone,Serialize,Deserialize)]
-pub struct Project {
+#[serde(default)]pub struct Store { pub tools:ToolSettings, pub projects:Vec<Project> }
+#[derive(Clone,Serialize,Deserialize)]pub struct Project {
  pub id:String, pub name:String, pub root:PathBuf,
  #[serde(default)] pub tools:ToolSettings,
  #[serde(default)] pub configs:Vec<RunConfig>,
  #[serde(default)] pub instances:Vec<Instance>,
  #[serde(default)] pub repos:Vec<Repo>,
 }
-#[derive(Clone,Serialize,Deserialize)]
-pub struct Repo {pub id:String,pub kind:String,pub path:PathBuf}
-#[derive(Clone,Serialize,Deserialize)]
-pub struct CommandSpec {pub program:String, #[serde(default)] pub args:Vec<String>}
-#[derive(Clone,Serialize,Deserialize)]
-pub struct RunConfig {
+#[derive(Clone,Serialize,Deserialize)]pub struct Repo {pub id:String,pub kind:String,pub path:PathBuf}
+#[derive(Clone,Serialize,Deserialize)]pub struct CommandSpec {pub program:String, #[serde(default)] pub args:Vec<String>}
+#[derive(Clone,Serialize,Deserialize)]pub struct RunConfig {
  pub id:String, pub name:String, pub command:CommandSpec,
  #[serde(default="dot")] pub cwd:String,
  #[serde(default)] pub build:Option<CommandSpec>,
@@ -42,8 +44,7 @@ pub struct RunConfig {
  #[serde(default)] pub env:BTreeMap<String,String>,
 }
 fn dot()->String {".".into()}
-#[derive(Clone,Serialize,Deserialize)]
-pub struct Instance {
+#[derive(Clone,Serialize,Deserialize)]pub struct Instance {
  pub id:String,pub name:String,pub config_id:String,
  #[serde(default)] pub port:Option<u16>,
  #[serde(default)] pub args:Vec<String>,
@@ -61,8 +62,8 @@ impl Store {
 }
 pub fn validate_command(c:&CommandSpec)->Result<()> {text(&c.program,4096)?;if c.args.len()>128{return fail("参数过多")}for a in &c.args{if a.len()>8192||a.contains('\0'){return fail("无效参数")}}Ok(())}
 pub fn validate_env(e:&BTreeMap<String,String>)->Result<()> {if e.len()>64{return fail("环境变量过多")}for(k,v)in e{if k.is_empty()||k.contains(['=','\0'])||v.contains('\0')||v.len()>8192{return fail("环境变量无效")}}Ok(())}
-pub fn existing_dir(path:&str)->Result<PathBuf> {let p=Path::new(path);if !p.is_absolute(){return fail("需要系统选择器返回的绝对路径")}let p=p.canonicalize()?;if !p.is_dir(){return fail("不是文件夹")}Ok(p)}
-/// Existing paths, deleted files and symlink ancestors must all stay in the trusted root.
+pub fn existing_dir(path:&str)->Result<PathBuf> {let p=Path::new(path);if !p.is_absolute(){return fail("需要系统选择器返回的绝对路径")}let p=p.canonicalize()?;if !p.is_dir(){return fail("不是文件夹")}Ok(native_path(p))}
+/// Existing paths, deleted files and symlink ancestors stay in the trusted root.
 pub fn inside(root:&Path,relative:&str)->Result<PathBuf> {
  let p=Path::new(relative);
  if p.is_absolute()||p.components().any(|c|matches!(c,Component::ParentDir|Component::Prefix(_)|Component::RootDir)){return fail("路径不能离开项目目录")}
@@ -80,4 +81,5 @@ pub fn vcs_path(root:&Path,path:&str)->Result<PathBuf> {
  use super::*;
  #[test]fn traversal(){let d=tempfile::tempdir().unwrap();assert!(inside(d.path(),"../x").is_err());assert!(inside(d.path(),"deleted/file.txt").is_ok());assert!(vcs_path(d.path(),".git/config").is_err());}
  #[test]fn persistence(){let d=tempfile::tempdir().unwrap();let p=d.path().join("s.json");let s=Store::default();s.save(&p).unwrap();s.save(&p).unwrap();assert!(Store::load(&p).unwrap().projects.is_empty());}
+ #[cfg(windows)]#[test]fn windows_external_paths(){assert_eq!(native_path(PathBuf::from(r"\\?\C:\Tools\git.exe")),PathBuf::from(r"C:\Tools\git.exe"));assert_eq!(native_path(PathBuf::from(r"\\?\UNC\server\share")),PathBuf::from(r"\\server\share"));}
 }
