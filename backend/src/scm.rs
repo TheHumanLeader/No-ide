@@ -10,7 +10,8 @@ const LIMIT:usize=1024*1024;
 impl Client{
  pub async fn new(s:&Store,p:&Project,r:&Repo)->Result<Self>{
   if !r.path.canonicalize()?.starts_with(p.root.canonicalize()?){return fail("仓库已移动或链接越过项目目录")}
-  Ok(Self{kind:r.kind.clone(),executable:tools::resolve(&r.kind,&s.tools,&p.tools).await?,repo:r.clone(),svn_config:p.tools.svn_config_dir.clone().or(s.tools.svn_config_dir.clone())})
+  let mut repo=r.clone();repo.path=native_path(repo.path.canonicalize()?);
+  Ok(Self{kind:r.kind.clone(),executable:tools::resolve(&r.kind,&s.tools,&p.tools).await?,repo,svn_config:p.tools.svn_config_dir.clone().or(s.tools.svn_config_dir.clone())})
  }
  fn command(&self,args:&[String])->Command{
   let mut c=Command::new(&self.executable);c.current_dir(&self.repo.path);
@@ -38,7 +39,7 @@ impl Client{
    let entry=doc.descendants().find(|n|n.has_tag_name("entry")).ok_or_else(||Error("无法读取 SVN 元数据".into()))?;
    let branch=format!("r{}",entry.attribute("revision").unwrap_or("?"));
    let remote=doc.descendants().find(|n|n.has_tag_name("url")).and_then(|n|n.text()).unwrap_or("").to_string();
-   Ok(Status{kind:"svn".into(),branch,push_remote:redact(&remote),remote:redact(&remote),files,snapshot:digest(&[&raw,&info])})
+   Ok(Status{kind:"svn".into(),branch,push_remote:redact(&remote),remote:redact(&remote),files,snapshot:digest(&[&canonical_xml(&raw)?,&canonical_xml(&info)?])})
   }
  }
  pub async fn diff(&self,path:&str,staged:bool)->Result<String>{
@@ -56,6 +57,17 @@ impl Client{
  }
 }
 fn digest(parts:&[&str])->String{let mut h=Sha256::new();for p in parts{h.update((p.len()as u64).to_le_bytes());h.update(p.as_bytes());}format!("{:x}",h.finalize())}
+// SVN's XML attribute ordering is not stable across invocations. Compare semantic
+// elements, attributes, text and revision data rather than raw serializer bytes.
+fn canonical_xml(raw:&str)->Result<String>{
+ fn visit(n:roxmltree::Node<'_, '_>)->String{
+  let mut attrs:Vec<_>=n.attributes().map(|a|(a.name(),a.value())).collect();attrs.sort_unstable();
+  let mut children:Vec<_>=n.children().filter(|c|c.is_element()).map(visit).collect();children.sort_unstable();
+  let text=n.children().filter(|c|c.is_text()).filter_map(|c|c.text()).map(str::trim).filter(|s|!s.is_empty()).collect::<Vec<_>>();
+  let encoded=serde_json::to_string(&(n.tag_name().name(),attrs,text,children)).expect("XML strings serialize");digest(&[&encoded])
+ }
+ let doc=roxmltree::Document::parse(raw).map_err(|e|Error(e.to_string()))?;Ok(visit(doc.root_element()))
+}
 pub fn parse_git(raw:&str)->Result<Vec<Change>>{
  let mut list=vec![];let mut parts=raw.split('\0').filter(|p|!p.is_empty());
  while let Some(p)=parts.next(){if p.len()<4||!p.is_char_boundary(3){return fail("Git 状态格式无效")};let x=p.as_bytes()[0]as char;let y=p.as_bytes()[1]as char;let renamed=x=='R'||x=='C'||y=='R'||y=='C';let original=if renamed{Some(parts.next().ok_or_else(||Error("Git 重命名记录不完整".into()))?.to_string())}else{None};list.push(Change{path:p[3..].into(),status:p[..2].into(),staged:x!=' '&&x!='?',worktree:y!=' '||x=='?',conflict:x=='U'||y=='U'||(x=='A'&&y=='A')||(x=='D'&&y=='D'),original});if list.len()>2000{return fail("变更超过 2000 个，先缩小工作副本范围")}}
@@ -120,5 +132,6 @@ async fn fingerprint(c:&Client,s:&Status,paths:&[String])->Result<String>{
  use super::*;
  #[test]fn git_spaces_and_rename(){let r=parse_git(" M a b.txt\0R  new.txt\0old.txt\0?? -file\0").unwrap();assert_eq!(r[0].path,"a b.txt");assert_eq!(r[1].original.as_deref(),Some("old.txt"));assert_eq!(r[2].path,"-file");}
  #[test]fn svn_props_conflict(){let r=parse_svn(r#"<status><target><entry path="a.txt"><wc-status item="normal" props="modified"/></entry><entry path="b"><wc-status item="normal" props="conflicted"/></entry></target></status>"#).unwrap();assert_eq!(r.len(),2);assert!(r[1].conflict);}
+ #[test]fn stable_xml(){assert_eq!(canonical_xml(r#"<a x="1" y="2"><b>value</b></a>"#).unwrap(),canonical_xml(r#"<a y="2" x="1"> <b>value</b> </a>"#).unwrap());assert_ne!(canonical_xml(r#"<a revision="1"/>"#).unwrap(),canonical_xml(r#"<a revision="2"/>"#).unwrap());}
  #[test]fn hides_userinfo(){assert_eq!(redact("https://name:secret@example.com/repo"),"https://[凭据已隐藏]@example.com/repo");}
 }
