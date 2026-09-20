@@ -1,0 +1,37 @@
+name: Frontend preview
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install frontend dependencies
+        run: npm install --no-audit --no-fund
+      - name: Check JavaScript
+        run: npm run check
+      - name: Build real Quasar frontend
+        run: npm run build
+      - name: Build self-contained Quasar preview
+        run: |
+          python scripts/build-preview.py --vue node_modules/vue/dist/vue.global.prod.js --quasar-js node_modules/quasar/dist/quasar.umd.prod.js --quasar-css node_modules/quasar/dist/quasar.prod.css --output dist/No-ide-preview.html
+          cp node_modules/quasar/LICENSE dist/QUASAR-LICENSE
+          cp node_modules/vue/LICENSE dist/VUE-LICENSE
+          cp package-lock.json dist/dependency-lock.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: no-ide-frontend
+          path: dist/
+          retention-days: 7
