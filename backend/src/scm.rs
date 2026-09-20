@@ -42,6 +42,7 @@ impl Client{
   }
  }
  pub async fn diff(&self,path:&str,staged:bool)->Result<String>{
+  if self.kind=="svn"&&path.contains('@'){return fail("本版暂不处理包含 @ 的 SVN 文件路径，请使用本机 SVN 客户端处理该文件")}
   let target=vcs_path(&self.repo.path,path)?;let status=self.status().await?;
   let f=status.files.iter().find(|f|f.path==path).ok_or_else(||Error("此文件不在当前变更列表中，请刷新".into()))?;
   if f.status=="??"||f.status=="unversioned"{
@@ -51,7 +52,7 @@ impl Client{
    let s=String::from_utf8(b).map_err(|_|Error("文件不是 UTF-8，暂不显示文本差异".into()))?;
    return Ok(format!("--- /dev/null\n+++ {path}\n{}",s.lines().map(|l|format!("+{l}\n")).collect::<String>()));
   }
-  if self.kind=="git"{let mut args=vec!["diff","--no-ext-diff","--no-textconv"];if staged{args.push("--cached")};args.extend(["--",path]);self.read(&args).await}else{self.read(&["diff","--internal-diff","--depth","empty","--",&format!("{path}@")]).await}
+  if self.kind=="git"{let mut args=vec!["diff","--no-ext-diff","--no-textconv"];if staged{args.push("--cached")};args.extend(["--",path]);self.read(&args).await}else{self.read(&["diff","--internal-diff","--depth","empty","--",path]).await}
  }
 }
 fn digest(parts:&[&str])->String{let mut h=Sha256::new();for p in parts{h.update((p.len()as u64).to_le_bytes());h.update(p.as_bytes());}format!("{:x}",h.finalize())}
@@ -86,7 +87,7 @@ impl Plans{
   if ["stage","unstage","commit","add"].contains(&operation)&&paths.is_empty(){return fail("没有选择文件 / 暂存区为空")}
   if paths.len()>200{return fail("单次最多处理 200 个文件")}
   let mut seen=HashSet::new();paths.retain(|p|seen.insert(p.clone()));
-  for p in &paths{let target=vcs_path(&client.repo.path,p)?;if !s.files.iter().any(|f|f.path==*p){return fail("文件状态已改变，请刷新")};if target.is_dir(){return fail("请逐个选择文件，本版不递归提交整个目录")}}
+  for p in &paths{if client.kind=="svn"&&p.contains('@'){return fail("本版暂不处理包含 @ 的 SVN 文件路径")};let target=vcs_path(&client.repo.path,p)?;if !s.files.iter().any(|f|f.path==*p){return fail("文件状态已改变，请刷新")};if target.is_dir(){return fail("请逐个选择文件，本版不递归提交整个目录")}}
   if ["push","pull"].contains(&operation){if s.remote.is_empty(){return fail("当前仓库未配置 origin")};if s.branch=="(detached HEAD)"{return fail("游离 HEAD 不能使用此操作")};}
   let fingerprint=fingerprint(client,&s,&paths).await?;
   let destination=if client.kind=="git"&&operation=="commit"{"仅提交到本地仓库，不推送".into()}else if ["stage","unstage","add"].contains(&operation){"本地工作副本".into()}else{format!("{} · {}",if client.kind=="git"{"origin"}else{"SVN 服务器"},if operation=="push"{&s.push_remote}else{&s.remote})};
@@ -100,11 +101,11 @@ impl Plans{
   match(client.kind.as_str(),p.operation.as_str()){
    ("git","stage")=>{args.extend(["add","--"].map(String::from));args.extend(p.paths.clone());}
    ("git","unstage")=>{args.extend(["restore","--staged","--"].map(String::from));args.extend(p.paths.clone());}
-   ("git","commit")|("svn","commit")=>{let mut f=tempfile::NamedTempFile::new()?;f.write_all(p.message.as_bytes())?;f.flush()?;args.extend(["commit".into(),"-F".into(),f.path().to_string_lossy().into()]);if client.kind=="svn"{args.extend(["--depth".into(),"empty".into(),"--".into()]);args.extend(p.paths.iter().map(|p|format!("{p}@")));}message_file=Some(f);}
+   ("git","commit")|("svn","commit")=>{let mut f=tempfile::NamedTempFile::new()?;f.write_all(p.message.as_bytes())?;f.flush()?;args.extend(["commit".into(),"-F".into(),f.path().to_string_lossy().into()]);if client.kind=="svn"{args.extend(["--depth".into(),"empty".into(),"--".into()]);args.extend(p.paths.clone());}message_file=Some(f);}
    ("git","pull")=>args.extend(["pull","--ff-only","--no-rebase","origin",&p.branch].map(String::from)),
    ("git","push")=>args.extend(["push".into(),"--porcelain".into(),"origin".into(),format!("HEAD:refs/heads/{}",p.branch)]),
    ("svn","update")=>args.extend(["update","--ignore-externals","--accept","postpone"].map(String::from)),
-   ("svn","add")=>{args.extend(["add","--parents","--depth","empty","--"].map(String::from));args.extend(p.paths.iter().map(|p|format!("{p}@")));}
+   ("svn","add")=>{args.extend(["add","--parents","--depth","empty","--"].map(String::from));args.extend(p.paths.clone());}
    _=>return fail("未支持的操作"),
   }
   let output=client.run_vec(args).await?;drop(message_file);process::checked(output).map(|s|redact(&s))
