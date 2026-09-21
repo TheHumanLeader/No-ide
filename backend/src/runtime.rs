@@ -39,7 +39,7 @@ impl Runtime{
   let root=&project.root;let cfg=crate::launch::resolve(store,project,cfg,None,true)?;
   if let Some(b)=&cfg.build{
    let mut cancelled=cancel.subscribe();
-   let run=async{let _permit=self.builds.acquire().await.map_err(|e|Error(e.to_string()))?;let cwd=inside(root,&cfg.cwd)?;let c=process::command(b,&cwd,None,&[],&cfg.env)?;let o=process::capture(c,120,512*1024).await?;self.hub.log(&cfg.id,"build",&o.stdout).await;self.hub.log(&cfg.id,"build",&o.stderr).await;process::checked(o)?;Ok::<_,Error>(())};
+   let run=async{let _permit=self.builds.acquire().await.map_err(|e|Error(e.to_string()))?;let cwd=inside(root,&cfg.cwd)?;let c=process::command(b,&cwd,None,&[],&cfg.env)?;let o=process::capture_text(c,120,512*1024,cfg.output_encoding).await?;for warning in &o.warnings{self.hub.log(&cfg.id,"encoding",warning).await;}log_chunks(&self.hub,&cfg.id,"build",&o.stdout).await;log_chunks(&self.hub,&cfg.id,"build",&o.stderr).await;process::checked(o)?;Ok::<_,Error>(())};
    tokio::select!{r=run=>r,_=cancelled.changed()=>fail("构建已取消")}
   }else{Ok(())}
  }
@@ -48,7 +48,7 @@ impl Runtime{
   if let Some(port)=i.port{if matches!(timeout(Duration::from_millis(200),tokio::net::TcpStream::connect(("127.0.0.1",port))).await,Ok(Ok(_))){return fail(format!("端口 {port} 已有监听程序，未启动实例"));}}
   let cwd=inside(root,&cfg.cwd)?;if !cwd.is_dir(){return fail("运行目录不存在")}
   let mut env=cfg.env.clone();if cfg.launcher.is_none(){env.extend(i.env.clone());}let extra=if cfg.launcher.is_some(){&[][..]}else{i.args.as_slice()};let cmd=process::command(&cfg.command,&cwd,i.port,extra,&env)?;let mut child=process::spawn(cmd)?;
-  let mut readers=vec![];if let Some(o)=child.0.stdout().take(){let hub=self.hub.clone();let id=i.id.clone();readers.push(tokio::spawn(async move{pump(o,hub,id,"stdout").await}));}if let Some(e)=child.0.stderr().take(){let hub=self.hub.clone();let id=i.id.clone();readers.push(tokio::spawn(async move{pump(e,hub,id,"stderr").await}));}
+  let encoding=cfg.output_encoding;let mut readers=vec![];if let Some(o)=child.0.stdout().take(){let hub=self.hub.clone();let id=i.id.clone();readers.push(tokio::spawn(async move{pump(o,hub,id,"stdout",encoding).await}));}if let Some(e)=child.0.stderr().take(){let hub=self.hub.clone();let id=i.id.clone();readers.push(tokio::spawn(async move{pump(e,hub,id,"stderr",encoding).await}));}
   self.state(&i.id,if i.port.is_some(){"starting"}else{"running"},child.0.id(),None,if i.port.is_some(){"等待 TCP 端口"}else{"进程已启动；未配置应用就绪检查"},true).await;
   Ok(Running{child,readers,instance:i,deadline:Instant::now()+Duration::from_secs(30),ready:false})
  }
@@ -88,7 +88,23 @@ impl Runtime{
   drop(watcher);for(_,r)in children{self.stop_run(r).await;}
  }
 }
-async fn pump<R:AsyncRead+Unpin>(mut r:R,hub:Arc<Hub>,id:String,stream:&str){let mut b=[0u8;4096];loop{match r.read(&mut b).await{Ok(0)|Err(_)=>break,Ok(n)=>hub.log(&id,stream,&String::from_utf8_lossy(&b[..n])).await}}}
+async fn log_chunks(hub:&Hub,id:&str,stream:&str,text:&str){
+ // Hub rows remain bounded, but do not silently discard all output after row 1.
+ let mut chunk=String::new();let mut count=0;
+ for ch in text.chars(){chunk.push(ch);count+=1;if count==4096{hub.log(id,stream,&chunk).await;chunk.clear();count=0;}}
+ if !chunk.is_empty(){hub.log(id,stream,&chunk).await;}
+}
+async fn pump<R:AsyncRead+Unpin>(mut r:R,hub:Arc<Hub>,id:String,stream:&str,encoding:crate::process::text_output::OutputEncoding){
+ let mut decoder=crate::process::text_output::TextDecoder::new(encoding);let mut warned=false;let mut b=[0u8;4096];
+ loop{
+  let n=match r.read(&mut b).await{Ok(n)=>n,Err(e)=>{hub.log(&id,"error",&format!("读取 {stream} 日志失败：{e}")).await;break}};
+  let piece=decoder.push(&b[..n],n==0);
+  if piece.replacements&&!warned{warned=true;hub.log(&id,"encoding",&crate::process::text_output::warning(piece.encoding)).await;}
+  if !piece.text.is_empty(){log_chunks(&hub,&id,stream,&piece.text).await;}
+  if n==0{break}
+ }
+}
+
 fn make_watcher(root:&std::path::Path,paths:&[String],tx:mpsc::Sender<()>)->Result<RecommendedWatcher>{
  let mut w=notify::recommended_watcher(move|e:notify::Result<notify::Event>|{if let Ok(e)=e{if matches!(e.kind,EventKind::Create(_)|EventKind::Modify(_)|EventKind::Remove(_))&&e.paths.iter().any(|p|!p.components().any(|c|[".git",".svn","target","build","dist","node_modules",".venv","__pycache__"].iter().any(|x|c.as_os_str()==*x))){let _=tx.try_send(());}}}).map_err(|e|Error(e.to_string()))?;
  for p in paths{if p=="."||p.is_empty(){return fail("请监听 src 等源目录，不监听整个项目")};let p=inside(root,p)?;w.watch(&p,RecursiveMode::Recursive).map_err(|e|Error(e.to_string()))?;}Ok(w)

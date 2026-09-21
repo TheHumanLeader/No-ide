@@ -53,7 +53,7 @@ pub fn maven_options(store:&Store)->Result<Vec<String>>{let mut a=vec![];if let 
 pub async fn verify(store:&Store,kind:&str,path:&Path)->Result<String>{
  let p=program_in(kind,path)?;let mut c=Command::new(p);c.current_dir(std::env::temp_dir()).arg("--version");if kind=="gradle"{c.arg("--no-daemon");}
  if let Ok(e)=environments::select(store,"java",None){let mut vars=Default::default();environments::inject(e,&mut vars)?;c.envs(vars);}
- let o=process::capture(c,12,32768).await?;if o.code!=0{return fail(format!("{kind} 版本检查失败，请检查所选 JDK：{}",o.stderr.chars().take(500).collect::<String>()))}
+ let o=process::capture_text(c,12,32768,Default::default()).await?;if o.code!=0{return fail(format!("{kind} 版本检查失败，请检查所选 JDK：{}",o.stderr.chars().take(500).collect::<String>()))}
  let text=format!("{}\n{}",o.stdout,o.stderr);let marker=if kind=="maven"{"Apache Maven "}else{"Gradle "};text.lines().find_map(|l|l.find(marker).map(|i|l[i..].into())).ok_or_else(||Error(format!("程序输出与 {kind} 类型不符")))
 }
 pub async fn report(store:&Store,kind:&str)->Report{

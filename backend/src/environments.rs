@@ -37,7 +37,7 @@ pub async fn verify(kind: &str, input: &Path) -> Result<Environment> {
     p = if kind == "python" { native_path(p.parent().ok_or_else(||Error("无效环境路径".into()))?.canonicalize()?.join(p.file_name().unwrap())) } else { native_path(p.canonicalize()?) };
     let mut c = Command::new(&p);
     c.current_dir(std::env::temp_dir()).arg(if kind == "java" { "-version" } else { "--version" });
-    let o = process::capture(c, 5, 16384).await?;
+    let o = process::capture_text(c, 5, 16384,Default::default()).await?;
     if o.code != 0 { return fail(format!("环境不能运行：{}", o.stderr.chars().take(300).collect::<String>())); }
     let raw = format!("{}\n{}", o.stdout, o.stderr);
     let line = raw.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();

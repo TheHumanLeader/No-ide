@@ -19,7 +19,7 @@ pub async fn verify(kind:&str,path:&str,source:&str)->Result<Candidate>{
  let p=native_path(p.canonicalize()?);
  let mut c=Command::new(&p);c.arg("--version");if kind=="svn"{c.arg("--quiet");}
  c.current_dir(std::env::temp_dir());c.env("GIT_TERMINAL_PROMPT","0");
- let o=process::capture(c,4,16384).await?;let version=process::checked(o)?.trim().to_string();
+ let o=process::capture_text(c,4,16384,Default::default()).await?;let version=process::checked(o)?.trim().to_string();
  if (kind=="git"&&!version.starts_with("git version "))||(kind=="svn"&&!version.starts_with(|c:char|c.is_ascii_digit())){return fail("文件可运行，但版本输出不匹配客户端类型")}
  Ok(Candidate{path:p.to_string_lossy().into(),version,source:source.into()})
 }

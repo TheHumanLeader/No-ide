@@ -1,6 +1,6 @@
 {
   "name": "no-ide",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "private": true,
   "type": "module",
   "description": "No-ide — 面向操作和结果的轻量代码运行工作台",

@@ -43,7 +43,7 @@ export function useWorkbenchV04(ctx){
   const e=discovery.value?.entries?.[Number(index)];if(!e)return
   selectedEntry.value=Number(index);commandPreview.value=null;commandError.value='';const existingId=form.value.id||'';const existingName=form.value.name
   const args=e.kind==='npm-script'&&e.suggested_port?['--host','127.0.0.1','--port','{port}']:['spring-maven','gradle-task'].includes(e.kind)&&e.suggested_port?['--server.port={port}']:[]
-  form.value={id:existingId,name:existingId?existingName:e.name,cwd:e.cwd,environment_id:defaults.value[e.environment_kind]||'',launcher:{kind:e.kind,target:e.target,sources:e.sources},argumentRows:asRows(args),vmRows:[],propertyRows:[],envRows:[],profileRows:[],watchRows:[],suggested_port:e.suggested_port}
+  form.value={id:existingId,name:existingId?existingName:e.name,cwd:e.cwd,output_encoding:form.value.output_encoding||'auto',environment_id:defaults.value[e.environment_kind]||'',launcher:{kind:e.kind,target:e.target,sources:e.sources},argumentRows:asRows(args),vmRows:[],propertyRows:[],envRows:[],profileRows:[],watchRows:[],suggested_port:e.suggested_port}
   if(['java-main','node-file','python-file','spring-maven'].includes(e.kind)){
    const src=(e.cwd==='.'?'':e.cwd+'/')+'src'
    const paths=discovery.value.directories.includes(src)?[src]:['python-file','node-file'].includes(e.kind)?[(e.cwd==='.'?'':e.cwd+'/')+e.target]:e.kind==='java-main'?e.sources:[]
@@ -58,7 +58,7 @@ export function useWorkbenchV04(ctx){
  function configForm(c){
   if(c&&!c.launcher){oldConfigForm(c);return}
   commandPreview.value=null;commandError.value='';selectedEntry.value=-1;scanRoot.value='.';discovery.value=null
-  form.value=c?{id:c.id,name:c.name,cwd:c.cwd,environment_id:c.environment_id||'',launcher:{...c.launcher},argumentRows:asRows(c.launcher.arguments),vmRows:asRows(c.launcher.vm_options),propertyRows:asRows(c.launcher.properties),envRows:asRows(c.env),profileRows:asRows(c.launcher.profiles),watchRows:asRows(c.watch)}:{id:'',name:'',cwd:'.',environment_id:'',launcher:null,argumentRows:[],vmRows:[],propertyRows:[],envRows:[],profileRows:[],watchRows:[]}
+  form.value=c?{id:c.id,name:c.name,cwd:c.cwd,output_encoding:c.output_encoding||'auto',environment_id:c.environment_id||'',launcher:{...c.launcher},argumentRows:asRows(c.launcher.arguments),vmRows:asRows(c.launcher.vm_options),propertyRows:asRows(c.launcher.properties),envRows:asRows(c.env),profileRows:asRows(c.launcher.profiles),watchRows:asRows(c.watch)}:{id:'',name:'',cwd:'.',output_encoding:'auto',environment_id:'',launcher:null,argumentRows:[],vmRows:[],propertyRows:[],envRows:[],profileRows:[],watchRows:[]}
   modal.value='configV4';void act(scanEntries)
  }
  async function browseScan(){await act(async()=>{const p=(await api('fs.pick',{kind:'folder',directory:project.value.root})).path;if(!p)return;scanRoot.value=(await api('project.relative',{project:project.value.id,path:p})).path;await scanEntries()})}
@@ -68,7 +68,7 @@ export function useWorkbenchV04(ctx){
   if(!kind)throw Error('请选择 Java、JAR、Node.js 或 Python 入口；package.json / pom.xml 请使用“选择模块目录”。')
   const cwd=rel.includes('/')?rel.slice(0,rel.lastIndexOf('/')):'.',target=rel.split('/').pop(),e={name:target,kind,cwd,target,sources:[],environment_kind:kindOf(kind),description:'手动选择的实际文件',suggested_port:null};discovery.value=discovery.value||{entries:[],directories:['.'],warnings:[]};discovery.value.entries.push(e);applyEntry(discovery.value.entries.length-1)
  })}
- function serializeConfig(){const f=form.value;if(!f.launcher)throw Error('请先选择识别出的运行入口，或点“选择入口文件”。');return{id:f.id||'',name:f.name,cwd:f.cwd,environment_id:f.environment_id||null,command:{program:'auto',args:[]},watch:argv(f.watchRows),env:pairs(f.envRows),launcher:{...f.launcher,arguments:argv(f.argumentRows),vm_options:argv(f.vmRows),properties:pairs(f.propertyRows),profiles:argv(f.profileRows)}}}
+ function serializeConfig(){const f=form.value;if(!f.launcher)throw Error('请先选择识别出的运行入口，或点“选择入口文件”。');return{id:f.id||'',name:f.name,cwd:f.cwd,output_encoding:f.output_encoding||'auto',environment_id:f.environment_id||null,command:{program:'auto',args:[]},watch:argv(f.watchRows),env:pairs(f.envRows),launcher:{...f.launcher,arguments:argv(f.argumentRows),vm_options:argv(f.vmRows),properties:pairs(f.propertyRows),profiles:argv(f.profileRows)}}}
  async function previewCommand(){commandPreview.value=null;commandError.value='';await act(async()=>{try{commandPreview.value=await api('launch.preview',{project:project.value.id,config:serializeConfig()})}catch(e){commandError.value=e.message||String(e)}})}
  async function detectBuildTools(){
   if(buildDetecting.value)return

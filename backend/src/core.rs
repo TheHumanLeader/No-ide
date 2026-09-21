@@ -38,6 +38,7 @@ pub fn native_path(p:PathBuf)->PathBuf {
 #[derive(Clone,Default,Serialize,Deserialize)]pub struct CommandSpec {pub program:String, #[serde(default)] pub args:Vec<String>}
 #[derive(Clone,Serialize,Deserialize)]pub struct RunConfig {
  pub id:String, pub name:String, #[serde(default)]pub command:CommandSpec,
+ #[serde(default)]pub output_encoding:crate::process::text_output::OutputEncoding,
  #[serde(default)]pub environment_id:Option<String>, #[serde(default)]pub launcher:Option<crate::launch::Launcher>,
  #[serde(default="dot")] pub cwd:String,
  #[serde(default)] pub build:Option<CommandSpec>,
