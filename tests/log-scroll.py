@@ -109,9 +109,10 @@ while True:
             body.evaluate('(e)=>{e.scrollTop=Math.max(0,e.scrollTop-350)}');expect(auto).not_to_be_checked()
             body.evaluate('(e)=>{e.scrollTop=e.scrollHeight}');expect(auto).to_be_checked();bottom()
             check('Moving the scrollbar to bottom resumes following')
-            page.get_by_role('button',name='项目管理',exact=True).click()
+            # Native navigation includes visible textual icons in the accessible name.
+            page.locator('nav .nav-item').filter(has_text='项目管理').click()
             emit(960,False)
-            page.get_by_role('button',name='运行台',exact=True).click()
+            page.locator('nav .nav-item').filter(has_text='运行台').click()
             expect(body).to_contain_text('LOG00960');bottom()
             check('Returning to the run page mounts at the newest log')
             emit(2200);bottom();expect(rows).to_have_count(120)
