@@ -22,7 +22,7 @@ async function boot() {
   if (health) {
     // Import failures must not silently replace real operations with mock data.
     await import('./live.css')
-    const { createLiveWorkbench } = await import('./live-workbench.js')
+    const { createLiveWorkbench } = await import('./log-follow-workbench.js')
     component = createLiveWorkbench(health)
   } else {
     component = createNoIdeApp()

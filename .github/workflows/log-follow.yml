@@ -1,0 +1,61 @@
+name: Log follow frontend patch
+on:
+  push:
+    branches: ['fix/log-follow-v0.4.2']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: log-follow-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - run: npm run check && node --check src/runtime-logs.js && npm test && npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: log-follow-web
+          path: dist/
+  windows:
+    needs: web
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: log-follow-web
+          path: dist
+      - name: Reuse the verified v0.4.2 Windows backend (no Rust changes)
+        uses: actions/download-artifact@v4
+        with:
+          name: no-ide-windows-x64
+          run-id: 35561002389
+          github-token: ${{ github.token }}
+          path: baseline
+      - name: Extract backend
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem baseline -Filter '*.zip' | Select-Object -First 1
+          Expand-Archive $zip.FullName baseline/bin
+          $exe = Get-ChildItem baseline/bin -Filter no-ide.exe -Recurse | Select-Object -First 1
+          "NO_IDE_TEST_EXE=$($exe.FullName)" >> $env:GITHUB_ENV
+      - run: python -m pip install playwright
+      - run: python -m playwright install chromium
+      - name: Real stdout and WebSocket scroll regression
+        run: python tests/log-scroll.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: log-follow-windows-report
+          path: test-results/native-log-scroll*
