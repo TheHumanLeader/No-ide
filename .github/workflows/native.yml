@@ -12,14 +12,9 @@ concurrency:
 jobs:
   web:
     runs-on: ubuntu-24.04
-    outputs:
-      backend: ${{ steps.detect.outputs.backend }}
     steps:
       - uses: actions/checkout@v4
-      - id: detect
-        run: |
-          test ! -f backend/Cargo.toml || echo 'backend=true' >> "$GITHUB_OUTPUT"
-          git archive --format=zip HEAD -o source.zip
+      - run: git archive --format=zip HEAD -o source.zip
       - uses: actions/upload-artifact@v4
         with:
           name: source
@@ -35,7 +30,6 @@ jobs:
           path: dist/
   native:
     needs: web
-    if: needs.web.outputs.backend == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -63,7 +57,7 @@ jobs:
           node-version: '22'
       - uses: actions/setup-java@v4
         with:
-          distribution: temurin
+          distribution: ${{ matrix.label == 'macos-arm64' && 'zulu' || 'temurin' }}
           java-version: '8'
       - name: Remember Java 8 SDK
         run: echo "TEST_JAVA8=$JAVA_HOME" >> "$GITHUB_ENV"
@@ -98,17 +92,15 @@ jobs:
       - name: Real API and process integration tests
         run: python tests/backend-smoke.py
       - name: Runtime registry and changelist integration tests
-        run: if test -f tests/workbench-v04.py; then python tests/workbench-v04.py; fi
+        run: python tests/workbench-v04.py
       - name: Browser dependencies
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' || runner.os == 'Windows'
         run: |
           python -m pip install playwright
           python -m playwright install --with-deps chromium
-      - name: Real UI and backend browser test
-        if: runner.os == 'Linux'
-        run: |
-          python tests/native-browser.py
-          if test -f tests/browser-v04.py; then python tests/browser-v04.py; fi
+      - name: Real v0.4 UI and backend browser test
+        if: runner.os == 'Linux' || runner.os == 'Windows'
+        run: python tests/browser-v04.py
       - name: Format and archive native source with dependency lock
         if: always()
         run: |
