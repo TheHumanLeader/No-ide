@@ -1,9 +1,16 @@
+import { useWorkbenchV04 } from './live-v04.js'
+import environmentPanel from './environment-panel.html?raw'
+import configurationDialogs from './configuration-dialogs.html?raw'
+import changeGroups from './change-groups.html?raw'
+import './workbench-v04.css'
+import { ValueRows } from './visual-controls.js'
 import liveTemplate from './live-layout.html?raw'
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 
 // Native-only UI adapter. This module never falls back to simulated results.
 export function createLiveWorkbench(health) {
  return {
+  components:{ ValueRows },
   setup() {
    const projects=ref([]), selectedProject=ref(''), runs=ref({}), logs=ref([]), tools=ref(null), settings=ref({}), page=ref('run')
    const connected=ref(false), busy=ref(0), error=ref(''), notice=ref(''), modal=ref(''), form=ref({}), plan=ref(null)
@@ -30,7 +37,7 @@ export function createLiveWorkbench(health) {
     if(!r.ok){if(r.status===401){connected.value=false;throw Error('本地会话已失效，请使用执行器新打开的浏览器地址。')}throw Error(data.error||`请求失败 (${r.status})`)}return data
    }
    async function act(fn) {busy.value++;error.value='';try{return await fn()}catch(e){error.value=e.message||String(e)}finally{busy.value--}}
-   async function refresh(){const d=await api('state');projects.value=d.store.projects;settings.value=d.store.tools;runs.value=Object.fromEntries(d.runs.map(r=>[r.instance,r]));if(!projects.value.some(p=>p.id===selectedProject.value))selectedProject.value=projects.value[0]?.id||'';connected.value=true}
+   async function refresh(){const d=await api('state');projects.value=d.store.projects;settings.value=d.store.tools;v04.setStore(d.store);runs.value=Object.fromEntries(d.runs.map(r=>[r.instance,r]));if(!projects.value.some(p=>p.id===selectedProject.value))selectedProject.value=projects.value[0]?.id||'';connected.value=true}
    function connect(){
     if(!mounted||!token)return;ws=new WebSocket(location.origin.replace(/^http/,'ws')+'/api/events')
     ws.onopen=()=>{ws.send(token);attempts=0;connected.value=true}
@@ -47,7 +54,7 @@ export function createLiveWorkbench(health) {
    function openAdd(){form.value={name:'',root:'',trusted:false};modal.value='project'}
    function clearRepo(){repoEpoch++;diffEpoch++;repoStatus.value=null;selectedFiles.value=[];file.value='';diff.value='';plan.value=null;modal.value=''}
    watch(selectedProject,()=>{clearRepo();repoId.value=project.value?.repos[0]?.id||'';if(page.value==='code'&&repoId.value)void act(loadRepo);if(page.value==='tools'){editTools();void act(detectTools)}})
-   async function saveProject(){await act(async()=>{if(!form.value.trusted)throw Error('请先确认此项目受信任。');const p=await api('project.add',{name:form.value.name,root:form.value.root,confirmed:true});await refresh();selectedProject.value=p.id;modal.value='';notice.value='项目已添加到本机配置，没有自动运行代码。'})}
+   async function saveProject(){await act(async()=>{if(!form.value.trusted)throw Error('请先确认此项目受信任。');const p=await api('project.add',{name:form.value.name,root:form.value.root,confirmed:true});await refresh();selectedProject.value=p.id;modal.value='';notice.value='项目已添加，正在查找可运行入口；不会自动执行代码。';await nextTick();v04.configForm()})}
    function configForm(c){form.value=c?{id:c.id,name:c.name,cwd:c.cwd,program:c.command.program,args:c.command.args.join('\n'),buildProgram:c.build?.program||'',buildArgs:(c.build?.args||[]).join('\n'),watch:c.watch.join('\n'),env:Object.entries(c.env).map(([k,v])=>`${k}=${v}`).join('\n')}:{id:'',name:'',cwd:'.',program:'',args:'',buildProgram:'',buildArgs:'',watch:'',env:''};modal.value='config'}
    function useTemplate(type){const win=health.platform==='windows';const t={java:{name:'Java 服务',program:'java',args:'-jar\ntarget/app.jar\n--server.port={port}'},vite:{name:'Vite 前端',program:win?'npm.cmd':'npm',args:'run\ndev\n--\n--host\n127.0.0.1\n--port\n{port}'},node:{name:'Node 服务',program:'node',args:'src/index.js'},python:{name:'Python 服务',program:win?'python':'python3',args:'-u\napp.py'},spring:{name:'Spring Boot',program:win?'mvnw.cmd':'./mvnw',args:'spring-boot:run\n-Dspring-boot.run.arguments=--server.port={port}'},android:{name:'Android 构建',program:win?'gradlew.bat':'./gradlew',args:'assembleDebug'}}[type];Object.assign(form.value,t);notice.value='模板只填入命令；请按实际工程修改入口。没有执行或安装工具。'}
    const lines=s=>s.split('\n').map(v=>v.trim()).filter(Boolean)
@@ -74,10 +81,11 @@ export function createLiveWorkbench(health) {
    async function execute(){await act(async()=>{const p=plan.value;if(!p)return;const r=await api('vcs.execute',{project:p.project,repo:p.repo,token:p.token,confirmed:true});modal.value='';plan.value=null;notice.value=r.output||'操作完成，请检查最新状态。';message.value='';selectedFiles.value=[];await loadRepo()})}
    function pause(){paused.value=!paused.value;if(paused.value)freezeLogs.value=logs.value.slice()}
    async function copyLogs(){await act(async()=>{await navigator.clipboard.writeText(visibleLogs.value.map(l=>`${new Date(l.time).toLocaleTimeString()} [${label(l.instance)}] ${l.text}`).join('\n'));notice.value='已复制当前可见日志；分享前请检查是否含敏感信息。'})}
+   const v04=useWorkbenchV04({api,act,refresh,project,projects,repo,repoId,repoStatus,selectedFiles,file,diff,modal,form,page,notice,message,plan,loadRepo,oldConfigForm:configForm,oldInstanceForm:instanceForm})
    onMounted(()=>{void act(async()=>{if(!token)throw Error('请从本地执行器自动打开的地址进入，以建立受保护的会话。');await refresh();connect();await detectTools()})})
    onUnmounted(()=>{mounted=false;ws?.close();clearTimeout(reconnectTimer);if(frame)cancelAnimationFrame(frame)})
-   return {health,projects,selectedProject,project,runs,logs,tools,settings,page,connected,busy,error,notice,modal,form,plan,repoId,repo,repoStatus,selectedFiles,file,diff,staged,diffMode,message,scope,toolForm,filter,paused,visibleLogs,diffRows,liveCount,stateText,label,act,refresh,go,openAdd,chooseProjectFolder,chooseField,saveProject,configForm,useTemplate,saveConfig,instanceForm,cloneInstance,saveInstance,run,runAll,editTools,detectTools,pickTool,saveTools,loadRepo,selectFile,addRepo,opName,prepare,execute,pause,copyLogs}
+   return {health,projects,selectedProject,project,runs,logs,tools,settings,page,connected,busy,error,notice,modal,form,plan,repoId,repo,repoStatus,selectedFiles,file,diff,staged,diffMode,message,scope,toolForm,filter,paused,visibleLogs,diffRows,liveCount,stateText,label,act,refresh,go,openAdd,chooseProjectFolder,chooseField,saveProject,configForm,useTemplate,saveConfig,instanceForm,cloneInstance,saveInstance,run,runAll,editTools,detectTools,pickTool,saveTools,loadRepo,selectFile,addRepo,opName,prepare,execute,pause,copyLogs,...v04}
   },
-  template: liveTemplate
+  template: liveTemplate.replace('<!-- runtime-environments -->',environmentPanel).replace('<!-- configuration-dialogs -->',configurationDialogs).replace('<!-- change-groups -->',changeGroups)
  }
 }
