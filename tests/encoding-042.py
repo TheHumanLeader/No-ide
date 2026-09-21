@@ -108,15 +108,28 @@ while True: time.sleep(1)
         check('Log charset support does not relax repository path validation')
 
 def maven_regression():
-    # The CI host can have an English locale. Force only the disposable Maven JVM
-    # to output GBK, not the machine locale and not the user's application settings.
-    opts='-Dfile.encoding=GBK -Dsun.stdout.encoding=GBK -Dsun.stderr.encoding=GBK -Dstyle.color=never'
+    # Change only console output for this disposable JVM. file.encoding affects
+    # file/URL decoding too, and is not needed to produce real GBK stdout/stderr.
+    opts='-Dsun.stdout.encoding=GBK -Dsun.stderr.encoding=GBK -Dstyle.color=never'
     with inherited(MAVEN_OPTS=opts):
       with Native() as n:
         java=os.environ['TEST_JAVA8']; e=n.api('environments.save',{'kind':'java','path':java,'name':'Java 8 中文回归','default':True})
         check('Java8 selected for legacy Maven output test',e['major']==8)
         mvn=shutil.which('mvn.cmd' if os.name=='nt' else 'mvn');assert mvn
         home=pathlib.Path(mvn).resolve().parent.parent; install=n.root/'构建工具 Maven 有空格';shutil.copytree(home,install)
+        # Compare the upstream command directly, preserving diagnostics even if
+        # a future JDK/Maven combination fails before reaching No-ide.
+        import ctypes
+        details['windows_ansi_code_page']=ctypes.windll.kernel32.GetACP()
+        probe=[]
+        for label,options in [('system-default',''),('old-forced-file-encoding','-Dfile.encoding=GBK '+opts),('stdout-stderr-only',opts)]:
+            direct=subprocess.run([str(install/'bin/mvn.cmd'),'--version'],cwd=n.root,
+                env={**os.environ,'JAVA_HOME':java,'MAVEN_OPTS':options},
+                stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=45,shell=True)
+            probe.append({'mode':label,'exit_code':direct.returncode,'stdout_hex':direct.stdout[-2048:].hex(),'stderr':direct.stderr.decode('utf8',errors='replace')})
+        details['direct_maven_version_probes']=probe
+        check('Unmodified upstream Maven starts from Chinese installation',probe[0]['exit_code']==0)
+        check('Changing only console encodings preserves upstream startup',probe[2]['exit_code']==0)
         n.api('build_tools.save',{'kind':'maven','path':str(install)})
         tool=n.api('build_tools.detect')['maven'];check('Maven version detection accepts localized output', tool['version'].startswith('Apache Maven '));details['maven_version']=tool['version']
         exe=pathlib.Path(tool['selected']['path'])
@@ -144,7 +157,7 @@ public static void main(String[] args) throws Exception {System.out.write("应�
         details['maven_output_is_gbk']=True
         p=n.project(root,'数字化平台 · 中文回归');pid=p['id']
         entry=next(x for x in n.api('project.discover',{'project':pid})['entries'] if x['kind']=='spring-maven')
-        c=n.api('config.save',{'project':pid,'config':{'id':'','name':'pms-admin · 中文输出回归','cwd':entry['cwd'],'environment_id':e['id'],'command':{'program':'auto','args':[]},'watch':[],'env':{},'launcher':{'kind':'spring-maven','target':entry['target'],'arguments':['--server.port={port}','--server.address=127.0.0.1'],'vm_options':['-Dfile.encoding=GBK'],'properties':{'probe.property':'value with spaces'}}}})
+        c=n.api('config.save',{'project':pid,'config':{'id':'','name':'pms-admin · 中文输出回归','cwd':entry['cwd'],'environment_id':e['id'],'command':{'program':'auto','args':[]},'watch':[],'env':{},'launcher':{'kind':'spring-maven','target':entry['target'],'arguments':['--server.port={port}','--server.address=127.0.0.1'],'vm_options':['-Dsun.stdout.encoding=GBK','-Dsun.stderr.encoding=GBK'],'properties':{'probe.property':'value with spaces'}}}})
         i=n.api('instance.save',{'project':pid,'instance':{'id':'','name':'数字化平台','config_id':c['id'],'environment_id':e['id'],'port':free_port(),'args':[],'env':{}}})
         result=start(n,pid,i,'/probe');details['spring_response']=result
         check('Default mode runs real Spring Boot after GBK Maven compile',result['java'].startswith('1.8.') and result['property']=='value with spaces')
