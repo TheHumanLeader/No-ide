@@ -102,7 +102,12 @@ while True: time.sleep(1)
         check('Log charset support does not relax repository path validation')
 
 def maven_regression():
-    opts='-Dsun.stdout.encoding=GBK -Dsun.stderr.encoding=GBK -Dstyle.color=never'
+    console_opts='-Dsun.stdout.encoding=GBK -Dsun.stderr.encoding=GBK -Dstyle.color=never'
+    # The real Maven logger uses Charset.defaultCharset(), not only System.out's
+    # stream setting. Force legacy output on this DISPOSABLE fixture JVM only.
+    # No product code inserts these flags and no system setting is changed.
+    opts='-Dfile.encoding=GBK '+console_opts
+    details['fixture_maven_opts']=opts
     with inherited(MAVEN_OPTS=opts):
       with Native() as n:
         java=os.environ['TEST_JAVA8'];e=n.api('environments.save',{'kind':'java','path':java,'name':'Java 8 中文回归','default':True})
@@ -111,16 +116,15 @@ def maven_regression():
         home=pathlib.Path(mvn).resolve().parent.parent;install=n.root/'构建工具 Maven 有空格';shutil.copytree(home,install)
         import ctypes
         details['windows_ansi_code_page']=ctypes.windll.kernel32.GetACP();probe=[]
-        for label,options in [('system-default',''),('old-forced-file-encoding','-Dfile.encoding=GBK '+opts),('stdout-stderr-only',opts)]:
+        for label,options in [('system-default',''),('forced-file-encoding',opts),('stdout-stderr-only',console_opts)]:
             direct=subprocess.run([str(install/'bin/mvn.cmd'),'--version'],cwd=n.root,env={**os.environ,'JAVA_HOME':java,'MAVEN_OPTS':options},stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=45,shell=True)
             probe.append({'mode':label,'exit_code':direct.returncode,'stdout_hex':direct.stdout[-2048:].hex(),'stderr':direct.stderr.decode('utf8',errors='replace')})
         details['direct_maven_version_probes']=probe
-        unicode_maven_ok=probe[0]['exit_code']==0 and probe[2]['exit_code']==0
+        unicode_maven_ok=all(p['exit_code']==0 for p in probe)
         details['upstream_java8_unicode_maven_supported']=unicode_maven_ok
         if not unicode_maven_ok:
-            # Not a decoder error: the unmodified upstream launcher also fails.
-            # Keep that failure explicit. Do not pretend the Unicode case passed,
-            # change machine locale, rewrite source, or silently switch Java.
+            # Preserve this unrelated upstream limitation; never count it as a
+            # Unicode-path pass or change the user's environment to work around it.
             details['known_limitations']=['On this Windows host Java 8 cannot start unmodified Maven from the Chinese installation path, even with default JVM options. This external path compatibility is NOT fixed by log decoding.']
             install=n.root/'Maven tools with spaces';shutil.copytree(home,install)
         details['maven_fixture_uses_chinese_paths']=unicode_maven_ok
@@ -179,7 +183,7 @@ public static void main(String[] args) throws Exception {System.out.write("应�
         check('Maven/Spring source files remain byte-for-byte unchanged',all(hashlib.sha256(p.read_bytes()).hexdigest()==h for p,h in hashes.items()))
 
 if __name__=='__main__':
-    report={'platform':platform.platform(),'checks':checks,'details':details,'passed':False,'scope':'Chinese paths are tested with native processes. Actual Java 8 Maven Spring build verifies GBK output separately; upstream Unicode-installation failures are recorded as known limitations, not reported as passes. No system code pages or user projects are changed.'}
+    report={'platform':platform.platform(),'checks':checks,'details':details,'passed':False,'scope':'Chinese paths are tested with native processes. Actual Java 8 Maven Spring build verifies GBK output separately; upstream Unicode-installation failures are recorded as known limitations, not reported as passes. Only disposable fixture JVMs are forced to emit legacy logs; production does not change JVM file.encoding or system code pages.'}
     try:
         native_regressions()
         if os.name=='nt':maven_regression()
