@@ -70,7 +70,12 @@ def maven_test():
   mvn=shutil.which('mvn.cmd' if os.name=='nt' else 'mvn');assert mvn,'Maven must exist in the CI test environment'
   home=pathlib.Path(mvn).resolve().parent.parent;installed=n.root/'Maven tools with spaces';shutil.copytree(home,installed)
   exe=installed/'bin'/('mvn.cmd' if os.name=='nt' else 'mvn')
-  n.api('build_tools.save',{'kind':'maven','path':str(installed)});report=n.api('build_tools.detect')['maven'];check('Maven folder resolved and version verified',report['version'].startswith('Apache Maven ') and pathlib.Path(report['selected']['path'])==exe)
+  n.api('build_tools.save',{'kind':'maven','path':str(installed)})
+  report=n.api('build_tools.detect')['maven'];details['maven_detection']=report
+  actual_program=pathlib.Path(report['selected']['path'])
+  # Windows TEMP may contain RUNNER~1; compare file identity, not 8.3 spelling.
+  check('Maven folder resolved and version verified',report['version'].startswith('Apache Maven ') and actual_program.samefile(exe))
+  exe=actual_program
   root=n.root/'Spring test project';module=root/'modules/admin';module.mkdir(parents=True)
   (module/'pom.xml').write_text('''<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><parent><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId><version>2.7.18</version><relativePath/></parent><groupId>local.noide</groupId><artifactId>launch-test</artifactId><version>1.0</version><properties><java.version>1.8</java.version><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties><dependencies><dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-web</artifactId></dependency></dependencies><build><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build></project>''',encoding='utf8')
   src=module/'src/main/java/fixture/App.java';src.parent.mkdir(parents=True);src.write_text('''package fixture;
