@@ -15,7 +15,7 @@ export const RuntimeLogs = {
     const viewport = ref(null), content = ref(null)
     const filter = ref(''), following = ref(true), paused = ref(false)
     const heldLogs = shallowRef([])
-    let lastRenderedSource = [], frame = 0, expectedTop = null, observer = null, alive = true
+    let lastRenderedSource = [], expectedTop = null, observer = null, alive = true
     let touchY = null
     const source = computed(() => paused.value || !following.value ? heldLogs.value : props.logs)
     const visibleLogs = computed(() => {
@@ -25,23 +25,17 @@ export const RuntimeLogs = {
     })
     const autoScroll = computed(() => following.value && !paused.value)
     const atBottom = el => el.scrollHeight - el.clientHeight - Math.max(0, el.scrollTop) <= 3
-    function cancelScroll() {
-      if (frame) cancelAnimationFrame(frame)
-      frame = 0
-      expectedTop = null
-    }
+    function cancelScroll() { expectedTop = null }
     function scrollBottom(force = false) {
-      if (!alive || (!force && !autoScroll.value)) return
-      if (frame) cancelAnimationFrame(frame)
-      frame = requestAnimationFrame(() => {
-        frame = 0
-        if (!alive || !viewport.value || (!force && !autoScroll.value)) return
-        const el = viewport.value
-        const top = Math.max(0, el.scrollHeight - el.clientHeight)
-        if (Math.abs(el.scrollTop - top) <= 1) return
-        expectedTop = top
-        el.scrollTop = top // Instant: smooth scrolling falls behind continuous output.
-      })
+      if (!alive || !viewport.value || (!force && !autoScroll.value)) return
+      // The log watcher runs after Vue has committed the DOM. The parent already
+      // batches socket records once per frame. Scroll here, not in a second rAF:
+      // a delayed follow frame could otherwise override a user's scrollbar drag.
+      const el = viewport.value
+      const top = Math.max(0, el.scrollHeight - el.clientHeight)
+      if (Math.abs(el.scrollTop - top) <= 1) { expectedTop = null; return }
+      expectedTop = top
+      el.scrollTop = top
     }
     function hold() {
       if (!following.value || paused.value) return
@@ -53,7 +47,7 @@ export const RuntimeLogs = {
       paused.value = false
       following.value = true
       heldLogs.value = []
-      // The post-flush watcher schedules the scroll after live rows replace the snapshot.
+      // The post-flush watcher scrolls again after live rows replace the snapshot.
       scrollBottom()
     }
     function pause() {
@@ -70,9 +64,6 @@ export const RuntimeLogs = {
         expectedTop = null
         return
       }
-      // DOM growth can clamp scrollTop before a pending follow frame executes.
-      // Wheel/touch/keyboard explicitly cancel that frame before user scrolling.
-      if (frame && autoScroll.value) return
       if (!atBottom(el)) hold()
       else if (!paused.value && !following.value) resume()
     }
