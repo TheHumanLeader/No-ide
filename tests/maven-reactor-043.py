@@ -28,12 +28,19 @@ def stop(n,p,i):
  n.api('run.stop',{'project':p['id'],'instance':i['id']});wait_for(lambda:view(n,i).get('state')=='stopped',30)
 def run_mvn(exe,args,cwd,java):
  r=subprocess.run([str(exe),*map(str,args)],cwd=cwd,env={**os.environ,'JAVA_HOME':java},stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=600,shell=os.name=='nt')
+ report.setdefault('direct_maven_commands',[]).append({'program':str(exe),'args':list(map(str,args)),'cwd':str(cwd),'exit_code':r.returncode})
+ if r.returncode!=0:
+  (OUT/'native-reactor-043-baseline.log').write_bytes(r.stdout)
  assert r.returncode==0,r.stdout[-6000:].decode(errors='replace')
  return r.stdout
 
 def main():
  with Native() as n:
-  root=n.root/'workspace with spaces';root.mkdir();core=root/'common';app=root/'app'
+  root=n.root/'workspace with spaces';root.mkdir()
+  original_root=str(root);root=root.resolve()
+  report['fixture_paths']={'provided':original_root,'canonical':str(root)}
+  assert pathlib.Path(original_root).samefile(root)
+  core=root/'common';app=root/'app' 
   cache=n.root/'isolated local repository';cache.mkdir();setting=n.root/'Maven settings.xml'
   put(setting,'<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"/>')
   java=os.environ['TEST_JAVA8'];e=n.api('environments.save',{'kind':'java','path':java,'name':'Java 8 reactor test','default':True})
@@ -71,7 +78,7 @@ import javax.websocket.*;import javax.websocket.server.*;import org.springframew
   removed_resource=core/'src/main/resources/removed-logger.xml';put(removed_resource,'old logger configuration')
   removed_app=app/'src/main/resources/removed-entry.properties';put(removed_app,'old.entry=true')
   opts=['--batch-mode','--no-transfer-progress','--settings',str(setting),f'-Dmaven.repo.local={cache}']
-  run_mvn(mvn,[*opts,'-pl','app','-am','-DskipTests','install'],root,java)
+  run_mvn(mvn,[*opts,'-f',str(root/'pom.xml'),'-pl','app','-am','-DskipTests','install'],root,java)
   jar=cache/'local/fixture/common/1.0.0/common-1.0.0.jar';oldhash=hashlib.sha256(jar.read_bytes()).hexdigest()
   check('Preinstalled genuine old release JAR contains deleted class','fixture/shared/RemovedLogger.class' in zipfile.ZipFile(jar).namelist())
   removed.unlink();removed_resource.unlink();removed_app.unlink();command('current-workspace-source','JOINED')

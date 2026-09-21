@@ -16,7 +16,7 @@ export const RuntimeLogs = {
     const filter = ref(''), following = ref(true), paused = ref(false)
     const heldLogs = shallowRef([])
     let lastRenderedSource = [], expectedTop = null, observer = null, alive = true
-    let touchY = null
+    let touchY = null, resumeOnBottom = true
     const source = computed(() => paused.value || !following.value ? heldLogs.value : props.logs)
     const visibleLogs = computed(() => {
       const ids = new Set([...props.project.instances.map(i => i.id), ...props.project.configs.map(c => c.id)])
@@ -37,13 +37,21 @@ export const RuntimeLogs = {
       expectedTop = top
       el.scrollTop = top
     }
-    function hold() {
+    function hold(allowBottomResume = true) {
       if (!following.value || paused.value) return
+      resumeOnBottom = allowBottomResume
       heldLogs.value = lastRenderedSource.slice(-1000)
       following.value = false
       cancelScroll()
     }
+    function disableFollow() {
+      // An already queued programmatic scroll event at bottom must not undo an
+      // explicit checkbox choice. Automatic resume is for upward review only.
+      resumeOnBottom = false
+      hold(false)
+    }
     function resume() {
+      resumeOnBottom = true
       paused.value = false
       following.value = true
       heldLogs.value = []
@@ -65,7 +73,7 @@ export const RuntimeLogs = {
         return
       }
       if (!atBottom(el)) hold()
-      else if (!paused.value && !following.value) resume()
+      else if (resumeOnBottom && !paused.value && !following.value) resume()
     }
     function onWheel(event) { if (event.deltaY < 0) hold() }
     function onKey(event) {
@@ -102,14 +110,14 @@ export const RuntimeLogs = {
     })
     onUnmounted(() => { alive = false; cancelScroll(); observer?.disconnect() })
     return { viewport, content, filter, paused, following, visibleLogs, autoScroll,
-      resume, hold, pause, onScroll, onWheel, onKey, onTouchStart, onTouchMove, copyLogs }
+      resume, hold, disableFollow, pause, onScroll, onWheel, onKey, onTouchStart, onTouchMove, copyLogs }
   },
   template: `
-<section class="panel live-log-panel" data-log-panel-version="0.4.2-logfollow.1">
+<section class="panel live-log-panel" data-log-panel-version="0.4.3-logfollow.2">
   <header class="panel-header">
     <div><h2>运行日志</h2><span class="tiny-muted">实时进程输出 · 最近 120 条</span></div>
     <div class="live-log-actions">
-      <label class="log-auto-toggle"><input type="checkbox" aria-label="自动滚动日志" :checked="autoScroll" @change="$event.target.checked?resume():hold()">自动滚动</label>
+      <label class="log-auto-toggle"><input type="checkbox" aria-label="自动滚动日志" :checked="autoScroll" @change="$event.target.checked?resume():disableFollow()">自动滚动</label>
       <button class="text-button" @click="pause">{{paused?'继续展示':'暂停展示'}}</button>
       <button class="text-button" @click="copyLogs">复制可见日志</button>
     </div>
