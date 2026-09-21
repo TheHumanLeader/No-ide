@@ -43,7 +43,11 @@ def main():
         def output():
             lines=[l['text'] for l in n.api('logs') if l['instance']==i['id']]
             return '\n'.join(lines) if any('_OK ' in x for x in lines) else False
-        out=wait_for(output,45);n.api('run.stop',{'project':pid,'instance':i['id']});return out
+        out=wait_for(output,45)
+        n.api('run.stop',{'project':pid,'instance':i['id']})
+        # Stop is asynchronous; wait for completion before changing shared config.
+        wait_for(lambda: next((s for s in n.api('state')['runs'] if s['instance']==i['id']), {}).get('state')=='stopped')
+        return out
     for kind,mark in [('python','PYTHON_OK'),('node','NODE_OK')]:
         entry=next(e for e in d['entries'] if e['kind']==kind+'-file')
         c=config(kind,entry,runtimes[kind],['one argument with spaces'])
