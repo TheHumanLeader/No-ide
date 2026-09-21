@@ -76,7 +76,7 @@ pub fn inside(root:&Path,relative:&str)->Result<PathBuf> {
  Ok(target)
 }
 pub fn vcs_path(root:&Path,path:&str)->Result<PathBuf> {
- text(path,4096)?;if path=="."||Path::new(path).components().any(|c| c.as_os_str()==".git"||c.as_os_str()==".svn"){return fail("不能操作版本库元数据")}
+ text(path,4096)?;if path=="."||path.replace('\\',"/").split('/').any(|c|[".git",".svn"].iter().any(|name|c.trim_end_matches(['.',' ']).eq_ignore_ascii_case(name))){return fail("版本库管理数据不能纳入版本控制或提交；可以在本地移动分组，不会读写其中内容")}
  inside(root,path)
 }
 #[cfg(test)]mod tests{

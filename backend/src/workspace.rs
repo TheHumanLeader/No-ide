@@ -64,7 +64,7 @@ pub async fn dispatch(s:&Arc<App>,action:&str,v:&Value)->Result<Option<Value>>{
     "vcs.group.save"=>{target.groups.save(gid,crate::string(v,"name")?)?;},
     "vcs.group.delete"=>{crate::confirm(v)?;target.groups.remove(gid)?;},
     _=>{let paths:Vec<String>=crate::val(&v["paths"])?;if paths.is_empty()||paths.len()>2000{return fail("一次请选择 1～2000 个文件移动分组")};
-     let mut unique=std::collections::BTreeSet::new();for path in paths{vcs_path(&target.path,&path)?;unique.insert(path);}
+     let mut unique=std::collections::BTreeSet::new();for path in paths{unique.insert(crate::groups::path_key(&path)?);}
      target.groups.set(&unique.into_iter().collect::<Vec<_>>(),gid)?;
     }
    }

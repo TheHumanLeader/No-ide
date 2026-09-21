@@ -1,3 +1,4 @@
+import { metadataPath } from './selection.js'
 import { useWorkbenchV04 } from './live-v04.js'
 import environmentPanel from './environment-panel.html?raw'
 import configurationDialogs from './configuration-dialogs.html?raw'
@@ -77,6 +78,7 @@ export function createLiveWorkbench(health) {
    function selectFile(f){file.value=f.path;loadDiff()}
    function loadDiff(){
     diffEpoch++;diff.value='';diffError.value='';clearTimeout(diffTimer)
+    if(metadataPath(file.value)){diffPending=null;diffBusy.value=false;diff.value='这是版本库管理数据，可以勾选并移动到任意本地分组。为避免误读或误提交，不加载其中内容；移动分组不会修改 .gitignore 或 svn:ignore。';return}
     if(!file.value||!repo.value){diffPending=null;diffBusy.value=false;return}
     diffPending={project:project.value.id,repo:repoId.value,path:file.value,staged:staged.value,epoch:diffEpoch};diffBusy.value=true
     diffTimer=setTimeout(drainDiff,140)

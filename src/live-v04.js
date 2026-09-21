@@ -1,10 +1,10 @@
 import {ref,computed,watch} from 'vue'
 import {asRows,argv,pairs} from './visual-controls.js'
-import {toggleRows,selectVisible} from './selection.js'
+import {toggleRows,selectVisible,fileGroup} from './selection.js'
 export function useWorkbenchV04(ctx){
  const {api,act,refresh,project,repo,repoId,repoStatus,selectedFiles,file,diff,modal,form,page,notice,message,plan,loadRepo,selectFile,oldConfigForm,oldInstanceForm}=ctx
  const environments=ref([]),defaults=ref({}),candidates=ref([]),envWarnings=ref([]),envDraft=ref({}),discovery=ref(null),scanning=ref(false),scanRoot=ref('.'),selectedEntry=ref(-1),commandPreview=ref(null),configType=ref('auto')
- const buildSettings=ref({}),buildReports=ref(null),commandError=ref('')
+ const buildSettings=ref({}),buildReports=ref(null),commandError=ref(''),buildDetecting=ref(false),buildDetectError=ref('')
  const activeGroup=ref('default'),moveTarget=ref(''),groupDraft=ref({}),dragFiles=ref([])
  const fileFilter=ref(''),groupSaving=ref(false),anchor=ref(''),groupCache=new Map()
  let epoch=0
@@ -70,7 +70,11 @@ export function useWorkbenchV04(ctx){
  })}
  function serializeConfig(){const f=form.value;if(!f.launcher)throw Error('请先选择识别出的运行入口，或点“选择入口文件”。');return{id:f.id||'',name:f.name,cwd:f.cwd,environment_id:f.environment_id||null,command:{program:'auto',args:[]},watch:argv(f.watchRows),env:pairs(f.envRows),launcher:{...f.launcher,arguments:argv(f.argumentRows),vm_options:argv(f.vmRows),properties:pairs(f.propertyRows),profiles:argv(f.profileRows)}}}
  async function previewCommand(){commandPreview.value=null;commandError.value='';await act(async()=>{try{commandPreview.value=await api('launch.preview',{project:project.value.id,config:serializeConfig()})}catch(e){commandError.value=e.message||String(e)}})}
- async function detectBuildTools(){await act(async()=>{buildReports.value=await api('build_tools.detect')})}
+ async function detectBuildTools(){
+  if(buildDetecting.value)return
+  buildDetecting.value=true;buildDetectError.value=''
+  try{buildReports.value=await api('build_tools.detect')}catch(e){buildDetectError.value=e.message||String(e)}finally{buildDetecting.value=false}
+ }
  async function saveBuildTool(kind,path){await act(async()=>{await api('build_tools.save',{kind,path});await refresh();await detectBuildTools();notice.value='构建工具配置已保存；不修改系统 PATH，也不重新创建项目。'})}
  async function pickBuildTool(kind){await act(async()=>{const path=(await api('fs.pick',{kind:kind==='maven_settings'?'file':'folder'})).path;if(path){await api('build_tools.save',{kind,path});await refresh();await detectBuildTools();notice.value='已记住所选位置，项目可直接使用。'}})}
  async function pickConfigBuildTool(){await act(async()=>{const p=(await api('fs.pick',{kind:'folder'})).path;if(p)form.value.launcher.build_tool_path=p});await previewCommand()}
@@ -86,7 +90,7 @@ export function useWorkbenchV04(ctx){
  function instanceForm(i){if(!project.value?.configs.length){configForm();return}oldInstanceForm(i);form.value.environment_id=i?.environment_id||'';form.value.argumentRows=asRows(i?.args||[]);form.value.envRows=asRows(i?.env||{})}
  function cloneInstance(i){instanceForm({...i,id:'',name:i.name+' 副本',port:i.port?i.port+1:null})}
  async function saveVisualInstance(){await act(async()=>{const f=form.value;await api('instance.save',{project:project.value.id,instance:{id:f.id||'',name:f.name,config_id:f.config_id,port:f.port?Number(f.port):null,environment_id:f.environment_id||null,args:argv(f.argumentRows),env:pairs(f.envRows)}});await refresh();modal.value='';notice.value='实例已保存。运行环境可继承配置，也可独立选择。'})}
- watch(repoId,()=>{activeGroup.value='default';moveTarget.value='';selectedFiles.value=[]})
+ watch(repoId,()=>{activeGroup.value='default';moveTarget.value='';selectedFiles.value=[];anchor.value='';fileFilter.value=''})
  watch(activeGroup,()=>{selectedFiles.value=[];anchor.value='';fileFilter.value='';file.value='';diff.value=''})
  watch(repoStatus,()=>{if(!groups.value.some(g=>g.id===activeGroup.value))activeGroup.value='default';selectedFiles.value=selectedFiles.value.filter(p=>groupFiles.value.some(f=>f.path===p))})
  function cacheKey(){return `${project.value?.id}/${repoId.value}`}
@@ -94,8 +98,7 @@ export function useWorkbenchV04(ctx){
   const old=groupCache.get(key);if(old&&old.revision>g.revision)g=old;else{groupCache.set(key,g);if(groupCache.size>8)groupCache.delete(groupCache.keys().next().value)}
   if(key!==cacheKey())return
   if(repo.value)repo.value.groups=g
-  const assigned=path=>path!=null&&Object.hasOwn(g.assignments,path)?g.assignments[path]:null
-  if(repoStatus.value){repoStatus.value.groups=g.items;repoStatus.value.group_meta=g;repoStatus.value.files=repoStatus.value.files.map(f=>({...f,group:assigned(f.path)||assigned(f.original)||'default'}))}
+  if(repoStatus.value){repoStatus.value.groups=g.items;repoStatus.value.group_meta=g;repoStatus.value.files=repoStatus.value.files.map(f=>({...f,group:fileGroup(g,f.path,f.original)}))}
  }
  watch(repoStatus,d=>{if(d?.group_meta)applyGroups(d.group_meta)})
  function groupForm(g){groupDraft.value=g?{...g}:{id:'',name:''};modal.value='changeGroup'}
@@ -109,7 +112,7 @@ export function useWorkbenchV04(ctx){
   const move=[...new Set([...selected,...originals])];groupSaving.value=true
   try{await act(async()=>{const g=await api('vcs.group.move',{project:pid,repo:rid,group,paths:move,revision:repoStatus.value?.group_meta?.revision});applyGroups(g,key);if(key===cacheKey()){selectedFiles.value=selectedFiles.value.filter(p=>!move.includes(p));moveTarget.value='';notice.value=`已将 ${selected.length} 项移入分组。只保存本机归属，没有运行 Git / SVN，也没有提交代码。`;}})}finally{groupSaving.value=false}
  }
- function toggleFile(event,f){const result=toggleRows(visibleGroupFiles.value.map(x=>x.path),selectedFiles.value,anchor.value,f.path,event.shiftKey);selectedFiles.value=result.selected;anchor.value=result.anchor;void selectFile(f)}
+ function toggleFile(event,f){const result=toggleRows(visibleGroupFiles.value.map(x=>x.path),selectedFiles.value,anchor.value,f.path,event.shiftKey);selectedFiles.value=result.selected;anchor.value=result.anchor;if(!event.shiftKey&&result.selected.includes(f.path))void selectFile(f)}
  function startDrag(event,path){if(!selectedSet.value.has(path))selectedFiles.value=[path];dragFiles.value=[...selectedFiles.value];event.dataTransfer.setData('text/plain',JSON.stringify(dragFiles.value));event.dataTransfer.effectAllowed='move'}
  function dropGroup(event,id){event.preventDefault();const paths=dragFiles.value.filter(p=>repoStatus.value?.files.some(f=>f.path===p));dragFiles.value=[];if(paths.length)void moveFiles(id,paths)}
  function selectGroupAll(force=false){selectedFiles.value=selectVisible(visibleGroupFiles.value.map(f=>f.path),selectedFiles.value,force===true||!allVisibleSelected.value?'all':'none')}
@@ -119,5 +122,5 @@ export function useWorkbenchV04(ctx){
   if(scoped&&!paths.length)throw Error('请先勾选文件；点整行、全选或 Shift 连选都可以。')
   plan.value=await api('vcs.prepare',{project:project.value.id,repo:repoId.value,operation,paths,message:message.value,...(scoped?{group:activeGroup.value}:{}),whole_files:operation==='commit'});modal.value='confirm'
  })}
- return{buildSettings,buildReports,buildKind,commandError,detectBuildTools,saveBuildTool,pickBuildTool,pickConfigBuildTool,configEnvironment,configBuild,configInstances,cloneConfig,addConfigInstance,fileFilter,groupSaving,selectedSet,visibleGroupFiles,allVisibleSelected,changeStatus,toggleFile,invertSelection,environments,defaults,candidates,envWarnings,envDraft,discovery,scanning,scanRoot,selectedEntry,commandPreview,configType,currentKind,matchingEnvs,instanceKind,instanceEnvs,kindLabel,kindOf,envName,setStore,detectEnvironments,addDetected,environmentForm,pickEnvironment,saveEnvironment,useDefault,removeEnvironment,confirmRemoveEnvironment,ensureKind,applyEntry,scanEntries,configForm,browseScan,chooseWorkingDir,chooseEntryFile,previewCommand,saveVisualConfig,advancedConfig,instanceForm,cloneInstance,saveVisualInstance,activeGroup,moveTarget,groupDraft,groups,groupName,groupFiles,groupCount,groupForm,saveGroup,deleteGroup,confirmDeleteGroup,moveFiles,startDrag,dropGroup,selectGroupAll,prepare:prepareGroup}
+ return{buildDetecting,buildDetectError,buildSettings,buildReports,buildKind,commandError,detectBuildTools,saveBuildTool,pickBuildTool,pickConfigBuildTool,configEnvironment,configBuild,configInstances,cloneConfig,addConfigInstance,fileFilter,groupSaving,selectedSet,visibleGroupFiles,allVisibleSelected,changeStatus,toggleFile,invertSelection,environments,defaults,candidates,envWarnings,envDraft,discovery,scanning,scanRoot,selectedEntry,commandPreview,configType,currentKind,matchingEnvs,instanceKind,instanceEnvs,kindLabel,kindOf,envName,setStore,detectEnvironments,addDetected,environmentForm,pickEnvironment,saveEnvironment,useDefault,removeEnvironment,confirmRemoveEnvironment,ensureKind,applyEntry,scanEntries,configForm,browseScan,chooseWorkingDir,chooseEntryFile,previewCommand,saveVisualConfig,advancedConfig,instanceForm,cloneInstance,saveVisualInstance,activeGroup,moveTarget,groupDraft,groups,groupName,groupFiles,groupCount,groupForm,saveGroup,deleteGroup,confirmDeleteGroup,moveFiles,startDrag,dropGroup,selectGroupAll,prepare:prepareGroup}
 }

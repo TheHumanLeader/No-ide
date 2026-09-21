@@ -13,3 +13,23 @@ export function selectVisible(paths, selected, mode='all') {
   for (const p of paths) { if(mode==='none'||(mode==='invert'&&out.has(p)))out.delete(p);else out.add(p) }
   return [...out]
 }
+
+// Must match Rust groups::path_key / Groups::of. No disk or repository command.
+export function groupKey(path) {
+ return String(path ?? '').replaceAll('\\','/').split('/').filter(x=>x && x!=='.').join('/')
+}
+export function fileGroup(meta, path, original=null) {
+ const has=id=>(meta.items||[]).some(g=>g.id===id)
+ const assigned=key=>{
+  const a=meta.assignments||{}, raw=Object.hasOwn(a,key)?a[key]:a[key.replaceAll('/','\\')]
+  return has(raw)?raw:null
+ }
+ let key=groupKey(path)
+ const exact=assigned(key) || (original!=null?assigned(groupKey(original)):null)
+ if(exact)return exact
+ while(key.includes('/')) {key=key.slice(0,key.lastIndexOf('/'));const id=assigned(key);if(id)return id}
+ return 'default'
+}
+export function metadataPath(path) {
+ return String(path).replaceAll('\\','/').split('/').some(p=>['.git','.svn'].includes(p.replace(/[. ]+$/,'').toLowerCase()))
+}

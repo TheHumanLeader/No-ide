@@ -93,6 +93,8 @@ jobs:
         run: python tests/backend-smoke.py
       - name: Runtime registry and changelist integration tests
         run: python tests/workbench-v04.py
+      - name: Repository metadata grouping regression
+        run: python tests/metadata_groups.py
       - name: Browser dependencies
         if: runner.os == 'Linux' || runner.os == 'Windows'
         run: |
@@ -101,6 +103,9 @@ jobs:
       - name: Real v0.4 UI and backend browser test
         if: runner.os == 'Linux' || runner.os == 'Windows'
         run: python tests/browser-v04.py
+      - name: SVN .git grouping browser regression
+        if: runner.os == 'Linux' || runner.os == 'Windows'
+        run: python tests/metadata_groups.py --browser
       - name: Real 150-file grouping and Maven startup regressions
         if: runner.os == 'Linux' || runner.os == 'Windows'
         run: python tests/fix-041.py
