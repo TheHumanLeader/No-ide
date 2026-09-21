@@ -101,6 +101,9 @@ jobs:
       - name: Real v0.4 UI and backend browser test
         if: runner.os == 'Linux' || runner.os == 'Windows'
         run: python tests/browser-v04.py
+      - name: Real 150-file grouping and Maven startup regressions
+        if: runner.os == 'Linux' || runner.os == 'Windows'
+        run: python tests/fix-041.py
       - name: Format and archive native source with dependency lock
         if: always()
         run: |
@@ -125,4 +128,5 @@ jobs:
           path: |
             test-results/native-*.json
             test-results/native-*.png
+            test-results/native-*.log
           if-no-files-found: ignore

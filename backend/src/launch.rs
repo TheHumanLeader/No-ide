@@ -1,5 +1,6 @@
 //! Declarative launch configuration; argv is assembled on the backend, never by a shell string.
 use crate::{core::*, environments};
+#[path="build_tools.rs"] pub mod tools;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::{Path,PathBuf}};
 
@@ -8,6 +9,7 @@ use std::{collections::BTreeMap, path::{Path,PathBuf}};
 pub struct Launcher {
     pub kind:String,
     pub target:String,
+    pub build_tool_path:String,
     pub sources:Vec<String>,
     pub vm_options:Vec<String>,
     pub properties:BTreeMap<String,String>,
@@ -27,14 +29,6 @@ fn quote_arguments(args:&[String])->Result<String>{
     // Spring/Maven/Gradle parse an argument string themselves; reject line breaks.
     if args.iter().any(|a|a.contains(['\n','\r','\0'])){return fail("此启动方式的参数不能包含换行或 NUL");}
     Ok(args.iter().map(|a|format!("\"{}\"",a.replace('\\',"\\\\").replace('"',"\\\""))).collect::<Vec<_>>().join(" "))
-}
-fn tool(root:&Path,cwd:&Path,name:&str,wrapper:&str,args:Vec<String>)->CommandSpec{
-    let filename=if cfg!(windows){format!("{wrapper}.{}",if wrapper=="gradlew"{"bat"}else{"cmd"})}else{wrapper.into()};
-    let mut p=cwd.join(&filename);let mut ancestor=cwd;
-    while !p.is_file(){let Some(up)=ancestor.parent().filter(|p|p.starts_with(root))else{break};ancestor=up;p=ancestor.join(&filename);}
-    if p.is_file(){
-        if cfg!(windows){spec(p.to_string_lossy(),args)}else{let mut a=vec![p.to_string_lossy().into_owned()];a.extend(args);spec("/bin/sh",a)}
-    }else{spec(if cfg!(windows){format!("{name}.cmd")}else{name.into()},args)}
 }
 fn npm_cli(env:&environments::Environment)->Result<PathBuf>{
     let bin=Path::new(&env.program).parent().unwrap();
@@ -93,8 +87,10 @@ pub fn resolve(store:&Store,p:&Project,c:&RunConfig,instance:Option<&Instance>,p
                 if !vm.is_empty(){out.env.insert("MAVEN_OPTS".into(),quote_arguments(&vm)?);}
                 if !app_args.is_empty(){args.push(format!("-Dexec.args={}",quote_arguments(&app_args)?));}
             }
-            out.command=tool(&p.root,&cwd,"mvn","mvnw",args);
-            if l.kind=="spring-maven"{out.build=Some(tool(&p.root,&cwd,"mvn","mvnw",vec!["-DskipTests".into(),"compile".into()]));}
+            let tool=tools::resolve(store,&p.root,&cwd,"maven",&l.build_tool_path)?;
+            let options=tools::maven_options(store)?;let mut run_args=options.clone();run_args.extend(args);
+            out.command=tools::command(&tool,run_args);
+            if l.kind=="spring-maven"{let mut build_args=options;build_args.extend(["-DskipTests".into(),"compile".into()]);out.build=Some(tools::command(&tool,build_args));}
         },
         "gradle-task"=>{
             if !cwd.join("build.gradle").is_file()&&!cwd.join("build.gradle.kts").is_file(){return fail("工作目录中没有 Gradle 构建文件")};
@@ -102,7 +98,7 @@ pub fn resolve(store:&Store,p:&Project,c:&RunConfig,instance:Option<&Instance>,p
             let mut args=vec![l.target.clone(),"--no-daemon".into()];
             if !app_args.is_empty(){if l.target=="assembleDebug"{return fail("Android 构建任务不接收程序入参")};args.push(format!("--args={}",quote_arguments(&app_args)?));}
             if !vm.is_empty(){out.env.insert("JAVA_TOOL_OPTIONS".into(),quote_arguments(&vm)?);}
-            out.command=tool(&p.root,&cwd,"gradle","gradlew",args);
+            let tool=tools::resolve(store,&p.root,&cwd,"gradle",&l.build_tool_path)?;out.command=tools::command(&tool,args);
         },
         _=>return fail("未知自动启动类型，请重新扫描或使用高级自定义配置"),
     }

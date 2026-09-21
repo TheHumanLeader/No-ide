@@ -26,7 +26,7 @@ pub fn native_path(p:PathBuf)->PathBuf {
 #[derive(Clone,Default,Serialize,Deserialize)]
 #[serde(default)]pub struct ToolSettings { pub git:Option<String>, pub svn:Option<String>, pub svn_config_dir:Option<String> }
 #[derive(Clone,Default,Serialize,Deserialize)]
-#[serde(default)]pub struct Store { pub tools:ToolSettings, pub projects:Vec<Project>, pub environments:Vec<crate::environments::Environment>, pub environment_defaults:BTreeMap<String,String> }
+#[serde(default)]pub struct Store { pub tools:ToolSettings, pub projects:Vec<Project>, pub environments:Vec<crate::environments::Environment>, pub environment_defaults:BTreeMap<String,String>, pub build_tools:BTreeMap<String,String> }
 #[derive(Clone,Serialize,Deserialize)]pub struct Project {
  pub id:String, pub name:String, pub root:PathBuf,
  #[serde(default)] pub tools:ToolSettings,

@@ -7,10 +7,12 @@ pub struct Managed(pub Box<dyn ChildWrapper>);
 impl Drop for Managed {fn drop(&mut self){let _=self.0.start_kill();}}
 pub fn spawn(mut c:Command)->Result<Managed>{
  c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+ let program=c.as_std().get_program().to_string_lossy().into_owned();
+ let cwd=c.as_std().get_current_dir().map(|p|p.display().to_string()).unwrap_or_default();
  let mut c=CommandWrap::from(c);c.wrap(KillOnDrop);
  #[cfg(unix)]{c.wrap(ProcessGroup::leader());}
  #[cfg(windows)]{c.wrap(CreationFlags(windows::Win32::System::Threading::CREATE_NO_WINDOW));c.wrap(JobObject);}
- Ok(Managed(c.spawn()?))
+ Ok(Managed(c.spawn().map_err(|e|Error(format!("无法启动程序：{program}\n工作目录：{cwd}\n系统错误：{e}\n请检查安装位置与运行配置。没有自动换用其他版本。")))?))
 }
 #[derive(serde::Serialize)]
 pub struct Output {pub code:i32,pub stdout:String,pub stderr:String}
@@ -28,7 +30,10 @@ pub async fn capture(c:Command,seconds:u64,max:usize)->Result<Output>{
  let _=child.0.start_kill();let _=timeout(Duration::from_secs(3),child.0.wait()).await;
  result.map_err(|_|Error("命令超时，已请求停止受控进程；写操作结果请刷新确认".into()))?
 }
-pub fn checked(o:Output)->Result<String>{if o.code==0{Ok(o.stdout)}else{fail(format!("命令退出码 {}：{}",o.code,o.stderr.chars().take(4000).collect::<String>()))}}
+pub fn checked(o:Output)->Result<String>{if o.code==0{return Ok(o.stdout)}
+ let tail=|s:&str|s.chars().rev().take(4000).collect::<String>().chars().rev().collect::<String>();
+ fail(format!("命令退出码 {}：\n{}\n{}",o.code,tail(&o.stderr),tail(&o.stdout)))
+}
 pub fn command(spec:&CommandSpec,cwd:&Path,port:Option<u16>,extra:&[String],env:&std::collections::BTreeMap<String,String>)->Result<Command>{
  validate_command(spec)?;validate_env(env)?;
  let replace=|s:&str|->Result<String>{if s.contains("{port}")&&port.is_none(){return fail("命令包含 {port}，请设置实例端口")}Ok(s.replace("{port}",&port.map(|p|p.to_string()).unwrap_or_default()))};
