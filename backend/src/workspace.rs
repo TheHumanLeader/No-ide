@@ -51,7 +51,8 @@ pub async fn dispatch(s:&Arc<App>,action:&str,v:&Value)->Result<Option<Value>>{
   "launch.preview"=>{
    let store=s.store.lock().await.clone();let p=store.project(crate::string(v,"project")?)?;let mut c:RunConfig=crate::val(&v["config"])?;if c.id.is_empty(){c.id="preview".into();}
    let resolved=launch::resolve(&store,&p,&c,None,false)?;
-   json!({"command":resolved.command,"build":resolved.build,"cwd":c.cwd,"java_home":resolved.env.get("JAVA_HOME")})
+   let maven=if let Some(l)=&c.launcher{if ["spring-maven","maven-main"].contains(&l.kind.as_str()){Some(launch::maven::resolve(&p.root,&inside(&p.root,&c.cwd)?,l)?)}else{None}}else{None};
+   json!({"command":resolved.command,"build":resolved.build,"cwd":resolved.cwd,"java_home":resolved.env.get("JAVA_HOME"),"maven":maven})
   },
   "vcs.group.save"|"vcs.group.move"|"vcs.group.delete"=>{
    // Grouping changes only local metadata. No client lookup, status or diff subprocess.

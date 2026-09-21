@@ -109,6 +109,12 @@ jobs:
       - name: Real 150-file grouping and Maven startup regressions
         if: runner.os == 'Linux' || runner.os == 'Windows'
         run: python tests/fix-041.py
+      - name: Actual Maven reactor stale-JAR and WebSocket regression
+        if: runner.os == 'Linux' || runner.os == 'Windows'
+        run: python tests/maven-reactor-043.py
+      - name: Log follow through actual stdout and WebSocket
+        if: runner.os == 'Linux' || runner.os == 'Windows'
+        run: python tests/log-scroll.py
       - name: Non-UTF-8 build and Chinese path regressions
         run: python tests/encoding-042.py
       - name: Format and archive native source with dependency lock

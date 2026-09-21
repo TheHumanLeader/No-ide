@@ -1,6 +1,7 @@
 //! Declarative launch configuration; argv is assembled on the backend, never by a shell string.
 use crate::{core::*, environments};
 #[path="build_tools.rs"] pub mod tools;
+#[path="maven_workspace.rs"] pub mod maven;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::{Path,PathBuf}};
 
@@ -15,6 +16,11 @@ pub struct Launcher {
     pub properties:BTreeMap<String,String>,
     pub arguments:Vec<String>,
     pub profiles:Vec<String>,
+    pub maven_root:String,
+    pub working_directory:String,
+    pub maven_profiles:Vec<String>,
+    pub maven_properties:BTreeMap<String,String>,
+    pub trace_classes:bool,
 }
 #[derive(Clone,Serialize,Deserialize)]
 pub struct Entry {
@@ -49,6 +55,7 @@ pub fn resolve(store:&Store,p:&Project,c:&RunConfig,instance:Option<&Instance>,p
     if let Some(i)=instance{out.env.extend(i.env.clone());}
     environments::inject(env,&mut out.env)?;
     let mut vm=l.vm_options.clone();
+    if l.trace_classes && kind=="java" {vm.push("-verbose:class".into());}
     for(k,v)in &l.properties {text(k,256)?;if k.contains(['=','\0','\n','\r'])||v.len()>8192||v.contains('\0'){return fail("Java 系统属性格式无效")};vm.push(format!("-D{k}={v}"));}
     let mut app_args=l.arguments.clone();
     if let Some(i)=instance{app_args.extend(i.args.clone());}
@@ -87,10 +94,23 @@ pub fn resolve(store:&Store,p:&Project,c:&RunConfig,instance:Option<&Instance>,p
                 if !vm.is_empty(){out.env.insert("MAVEN_OPTS".into(),quote_arguments(&vm)?);}
                 if !app_args.is_empty(){args.push(format!("-Dexec.args={}",quote_arguments(&app_args)?));}
             }
+            let plan=maven::resolve(&p.root,&cwd,l)?;
             let tool=tools::resolve(store,&p.root,&cwd,"maven",&l.build_tool_path)?;
-            let options=tools::maven_options(store)?;let mut run_args=options.clone();run_args.extend(args);
+            let mut options=tools::maven_options(store)?;options.extend(plan.common_args(&p.root,l)?);
+            if l.kind=="spring-maven"{
+                // Application cwd is independent of the selected Maven module.
+                // A reactor root matches IDEA's usual project working directory.
+                args.push(format!("-Dspring-boot.run.workingDirectory={}",inside(&p.root,&plan.working_directory)?.display()));
+            }
+            out.cwd=plan.working_directory.clone();
+            let mut run_args=options.clone();run_args.extend(args);
             out.command=tools::command(&tool,run_args);
-            if l.kind=="spring-maven"{let mut build_args=options;build_args.extend(["-DskipTests".into(),"compile".into()]);out.build=Some(tools::command(&tool,build_args));}
+            let mut build_args=options;
+            if plan.multi_module{build_args.push("--also-make".into());}
+            build_args.extend(["-DskipTests".into(),"clean".into(),if plan.multi_module{"install"}else{"compile"}.into()]);
+            // Never run spring-boot:run on every reactor module. Only the build
+            // uses --also-make; the run command selects the entry module alone.
+            out.build=Some(tools::command(&tool,build_args));
         },
         "gradle-task"=>{
             if !cwd.join("build.gradle").is_file()&&!cwd.join("build.gradle.kts").is_file(){return fail("工作目录中没有 Gradle 构建文件")};
