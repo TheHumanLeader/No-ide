@@ -1,4 +1,4 @@
-mod environments;mod discovery;mod launch;mod groups;mod workspace;mod core;mod process;mod tools;mod runtime;mod scm;
+mod incremental;mod environments;mod discovery;mod launch;mod groups;mod workspace;mod core;mod process;mod tools;mod runtime;mod scm;
 use crate::core::*;
 use axum::{Router,Json,extract::{State,Request,DefaultBodyLimit,ws::{WebSocketUpgrade,Message}},http::{StatusCode,header},middleware::{self,Next},response::{IntoResponse,Response},routing::{get,post}};
 use serde::Deserialize;
@@ -83,9 +83,10 @@ async fn call(State(s):State<Arc<App>>,Json(call):Json<Call>)->Result<Json<Value
    };
    updated.save(&s.file)?;*store=updated;object
   },
-  "run.start"|"run.stop"|"run.update"=>{
+  "run.start"|"run.stop"|"run.update"|"run.repair"=>{
+   if call.action=="run.repair"{confirm(v)?;}
    let _operation=if call.action=="run.start"{Some(s.writes.lock().await)}else{None};let store=s.store.lock().await.clone();let p=store.project(string(v,"project")?)?;let i=p.instances.iter().find(|i|Some(i.id.as_str())==v["instance"].as_str()).cloned().ok_or_else(||Error("实例不存在".into()))?;
-   if call.action=="run.start"{s.runtime.start(p,i,store.clone()).await?}else{s.runtime.control(&p,&i,if call.action=="run.stop"{"stop"}else{"update"}).await?};json!({"accepted":true})
+   if call.action=="run.start"{s.runtime.start(p,i,store.clone()).await?}else{s.runtime.control(&p,&i,if call.action=="run.stop"{"stop"}else if call.action=="run.repair"{"repair"}else{"update"}).await?};json!({"accepted":true})
   },
   "vcs.status"|"vcs.diff"|"vcs.prepare"|"vcs.execute"=>{
    let _guard=s.vcs.lock().await;let _operation=if ["vcs.prepare","vcs.execute"].contains(&call.action.as_str()){Some(s.writes.lock().await)}else{None};let store=s.store.lock().await.clone();let p=store.project(string(v,"project")?)?;let r=p.repos.iter().find(|r|Some(r.id.as_str())==v["repo"].as_str()).ok_or_else(||Error("仓库不存在".into()))?;
@@ -123,7 +124,7 @@ fn entry()->Result<()>{
  let rt=tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
  rt.block_on(async{
   let listener=tokio::net::TcpListener::bind(("127.0.0.1",port)).await?;let port=listener.local_addr()?.port();let token=id();
-  let s=Arc::new(App{store:Mutex::new(store),file,token:token.clone(),port,runtime:runtime::Runtime::new(),plans:Default::default(),writes:Default::default(),vcs:Default::default(),dialogs:Default::default(),requests:Semaphore::new(32)});
+  let s=Arc::new(App{store:Mutex::new(store),file,token:token.clone(),port,runtime:runtime::Runtime::new(data.join("build-state")),plans:Default::default(),writes:Default::default(),vcs:Default::default(),dialogs:Default::default(),requests:Semaphore::new(32)});
   let app=Router::new().route("/api/health",get(||async{Json(json!({"name":"no-ide","version":env!("CARGO_PKG_VERSION"),"platform":std::env::consts::OS,"arch":std::env::consts::ARCH}))})).route("/api/call",post(call)).route("/api/events",get(events)).fallback_service(ServeDir::new(web)).layer(DefaultBodyLimit::max(256*1024)).layer(middleware::from_fn_with_state(s.clone(),boundary)).with_state(s.clone());
   let url=format!("http://127.0.0.1:{port}/#token={token}");println!("NO_IDE_URL={url}");std::io::stdout().flush()?;
   if !args.iter().any(|a|a=="--no-open"){let u=url.clone();tokio::task::spawn_blocking(move||{let _=open::that(u);});}

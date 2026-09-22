@@ -112,6 +112,9 @@ jobs:
       - name: Actual Maven reactor stale-JAR and WebSocket regression
         if: runner.os == 'Linux' || runner.os == 'Windows'
         run: python tests/maven-reactor-043.py
+      - name: Actual incremental module reuse and deleted source regression
+        if: runner.os == 'Linux' || runner.os == 'Windows'
+        run: python tests/maven-incremental-044.py
       - name: Log follow through actual stdout and WebSocket
         if: runner.os == 'Linux' || runner.os == 'Windows'
         run: python tests/log-scroll.py

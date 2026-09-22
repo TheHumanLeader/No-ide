@@ -1,6 +1,6 @@
 {
   "name": "no-ide",
-  "version": "0.4.2",
+  "version": "0.4.4",
   "private": true,
   "type": "module",
   "description": "No-ide — 面向操作和结果的轻量代码运行工作台",
@@ -8,7 +8,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "check": "node --check src/app.js && node --check src/catalog.js && node --check src/project-model.js && node --check src/source-control.js && node --check src/main.js && node --check src/live-workbench.js && node --check src/live-v04.js && node --check src/selection.js",
+    "check": "node --check src/app.js && node --check src/catalog.js && node --check src/project-model.js && node --check src/source-control.js && node --check src/main.js && node --check src/live-workbench.js && node --check src/live-v04.js && node --check src/selection.js && node --check src/incremental-workbench.js",
     "test": "node --test tests/models.test.js tests/selection.test.js"
   },
   "engines": { "node": "^20.19.0 || >=22.12.0" },

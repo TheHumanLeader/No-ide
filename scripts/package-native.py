@@ -1,4 +1,4 @@
-"""Package tested native code and web assets. Version comes from Cargo.toml."""
+"""Package native code and production assets; callers must first pass CI tests."""
 import pathlib, shutil, sys, zipfile, json, os, tomllib
 root=pathlib.Path(__file__).resolve().parents[1]
 label=sys.argv[1]
@@ -20,34 +20,26 @@ else:
     (stage/exe).chmod(0o755)
 (stage/'README.txt').write_text(f'''No-ide {version} — 本地 Rust 执行器
 
-解压整个目录，保留 web 文件夹。Windows 双击 Start-No-ide.bat，浏览器自动打开。
+完整解压，保留 web 文件夹。Windows 双击 Start-No-ide.bat，浏览器自动打开。
 macOS：No-ide.command；Linux：./start.sh。
-不需要安装 Rust 或 IDEA；运行项目需要本机已有对应的 Java、Node.js、Python 等工具。
+不需安装 Rust 或 IDEA；运行工程仍需本机已有对应 Java / Maven / Node.js / Python。
 
-升级前先停止旧版实例、关闭旧版启动窗口，然后解压到新文件夹启动。
-项目与环境配置保存在系统用户配置目录，不要删除其中的 settings.json。
-重要代码先备份。请勿让旧版继续写入新版配置。
+升级：先停止旧实例、退出旧执行器，再解压到新目录启动。备份系统用户配置目录中的 no-ide 配置，不删除 settings.json，不同时运行新旧执行器。
 
-本版修复：Maven 多模块启动从聚合根构建入口及依赖；启动时 clean 清除已删除类和资源的旧产物，install 更新所选本地仓库；只在入口执行 spring-boot:run。应用工作目录可独立点选，默认聚合根。日志区保留自动滚动补丁。
-保留：非 UTF-8 的 Maven 构建输出不再导致启动被误判失败。构建和运行日志兼容 Windows 本地编码；支持高级日志编码选择，路径和版本库结构化数据仍严格校验。
-保留整行勾选、Shift 连选、全选/反选和批量分组，不重扫仓库。
-运行台直接展示已有配置，可编辑；Maven/Gradle 自动发现和目录选择、Maven settings.xml/仓库设置已加入。
+本版 Maven：首次建立可信构建基线，之后默认只重编源码或产物变化的模块及其下游依赖者；未变上游模块复用。按内容指纹核对，不仅看文件修改时间。停止或退出后保留指纹。
+删除类、内部类、资源时清理受影响模块，不清理整条上游依赖链。源码不变但产物被删除或替换，也会重新检查。
+日常点“增量构建”。“清理重建”是独立、需确认的完整修复操作。
+首次建立基线、POM / JDK / Maven / 构建环境变化、未知自定义生命周期输入时仍可能保守重建，日志明确列出原因、重编和复用范围。
+首次使用额外的 Maven help/dependency 官方插件读取有效模型和依赖清单，不修改项目 POM。插件由所选 Maven settings 配置的仓库解析。
+这是模块级增量，不是仅编译一个 Java 文件；仍通过 Maven 启动 Spring Boot，不是 JVM 原地热替换。Spring 初始化时间独立存在，不能保证秒级启动。
 
-已有能力：
-1. 左侧“运行环境”：自动检测，或选择安装目录添加多个 Java / Node.js / Python。
-2. 项目运行配置：自动查找常见入口，支持选择模块目录和入口文件。
-3. 可视化编辑入参、环境变量、JVM 选项、系统属性，实例可单独选择环境。
-4. Git / SVN 代码管理：新建分组，拖动或批量移动文件，重启后记忆归属。
-   提交只包含当前组的所选文件。Git 分组提交使用整文件的当前内容，不是逐块提交。
-   其他组即使已经暂存，也不会被夹带；提交与推送分开。
+保留：聚合根构建本地依赖、独立应用工作目录、UTF-8 / Windows 本地日志编码、多环境选择、可视化参数、Git/SVN 整行批量勾选与持久分组、日志自动跟随。
+高阶自定义原始命令仍按用户命令执行，不替用户改写脚本。
+源码、类路径、生成器和外部输入复杂时可能不能安全复用，本版不会把未知状态当作“最新”。产物尚非隔离构建或原子发布，旧进程仍可能看到共享磁盘产物变化。
 
-客户端路径：项目指定 > 全局指定 > 自动检测；不全盘扫描、不自动安装。
-默认仅监听本机 127.0.0.1:17890，可通过 --port 指定端口。
-请勿分享带会话令牌的启动地址。GitHub Pages 仍是演示，本地包会真实操作代码。
-
-这是未签名的开发预览包，先在测试工程验证。自动入口识别有范围限制，不代表全量 IDEA 功能。
-JVM 原地 HotSwap、Android 完整设备部署、clone/checkout、复杂冲突处理仍未完成。
-系统文件选择器的人工桌面验收、私有远端认证与长期性能测试尚未完成。
+只绑定本机 127.0.0.1:17890；可用 --port 调整。不要分享含会话令牌的启动地址。GitHub Pages 为演示，本机包真实操作代码。
+构建中的 install 更新本地 Maven 仓库，不是 Git/SVN 提交或远程 deploy。
+未签名开发预览。系统文件选择器、私服定制和长期运行需用户环境验证。具体平台通过范围见相应 CI 报告，不能把单个平台通过当成全平台验收。
 ''',encoding='utf-8')
 with zipfile.ZipFile(root/'packages'/(name+'.zip'),'w',zipfile.ZIP_DEFLATED) as z:
     for p in stage.rglob('*'):
