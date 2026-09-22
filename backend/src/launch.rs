@@ -21,6 +21,8 @@ pub struct Launcher {
     pub maven_profiles:Vec<String>,
     pub maven_properties:BTreeMap<String,String>,
     pub trace_classes:bool,
+    pub update_mode:String,
+    pub main_class:String,
 }
 #[derive(Clone,Serialize,Deserialize)]
 pub struct Entry {
@@ -45,6 +47,9 @@ fn npm_cli(env:&environments::Environment)->Result<PathBuf>{
 }
 pub fn resolve(store:&Store,p:&Project,c:&RunConfig,instance:Option<&Instance>,prepare:bool)->Result<RunConfig>{
     let Some(l)=&c.launcher else {return Ok(c.clone())};
+    if !["","restart","hotswap"].contains(&l.update_mode.as_str()){return fail("未知更新模式")}
+    if l.update_mode=="hotswap" && l.kind!="spring-maven"{return fail("当前原地热替换支持 Spring Boot / Maven 自动入口")}
+    if !l.main_class.is_empty() && (l.main_class.len()>1024 || !l.main_class.chars().all(|c|c.is_alphanumeric()||"._$".contains(c))){return fail("主类名格式无效")}
     let kind=runtime_kind(&l.kind);
     let eid=instance.and_then(|i|i.environment_id.as_deref()).or(c.environment_id.as_deref());
     let env=environments::select(store,kind,eid)?;

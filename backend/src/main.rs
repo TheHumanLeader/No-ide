@@ -1,4 +1,4 @@
-mod incremental;mod environments;mod discovery;mod launch;mod groups;mod workspace;mod core;mod process;mod tools;mod runtime;mod scm;
+mod hot;mod incremental;mod environments;mod discovery;mod launch;mod groups;mod workspace;mod core;mod process;mod tools;mod runtime;mod scm;
 use crate::core::*;
 use axum::{Router,Json,extract::{State,Request,DefaultBodyLimit,ws::{WebSocketUpgrade,Message}},http::{StatusCode,header},middleware::{self,Next},response::{IntoResponse,Response},routing::{get,post}};
 use serde::Deserialize;
@@ -83,10 +83,10 @@ async fn call(State(s):State<Arc<App>>,Json(call):Json<Call>)->Result<Json<Value
    };
    updated.save(&s.file)?;*store=updated;object
   },
-  "run.start"|"run.stop"|"run.update"|"run.repair"=>{
+  "run.start"|"run.stop"|"run.update"|"run.apply"|"run.restart"|"run.repair"=>{
    if call.action=="run.repair"{confirm(v)?;}
    let _operation=if call.action=="run.start"{Some(s.writes.lock().await)}else{None};let store=s.store.lock().await.clone();let p=store.project(string(v,"project")?)?;let i=p.instances.iter().find(|i|Some(i.id.as_str())==v["instance"].as_str()).cloned().ok_or_else(||Error("实例不存在".into()))?;
-   if call.action=="run.start"{s.runtime.start(p,i,store.clone()).await?}else{s.runtime.control(&p,&i,if call.action=="run.stop"{"stop"}else if call.action=="run.repair"{"repair"}else{"update"}).await?};json!({"accepted":true})
+   if call.action=="run.start"{s.runtime.start(p,i,store.clone()).await?}else{s.runtime.control(&p,&i,if call.action=="run.stop"{"stop"}else if call.action=="run.repair"{"repair"}else if call.action=="run.restart"{"restart"}else{"update"}).await?};json!({"accepted":true})
   },
   "vcs.status"|"vcs.diff"|"vcs.prepare"|"vcs.execute"=>{
    let _guard=s.vcs.lock().await;let _operation=if ["vcs.prepare","vcs.execute"].contains(&call.action.as_str()){Some(s.writes.lock().await)}else{None};let store=s.store.lock().await.clone();let p=store.project(string(v,"project")?)?;let r=p.repos.iter().find(|r|Some(r.id.as_str())==v["repo"].as_str()).ok_or_else(||Error("仓库不存在".into()))?;

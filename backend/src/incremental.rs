@@ -6,14 +6,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::{BTreeMap, BTreeSet}, io::{Read, Write}, path::{Path, PathBuf}, sync::Arc};
 use tokio::time::Instant;
-const SCHEMA: u32 = 2;
+const SCHEMA: u32 = 3;
 const MAX_FILES: usize = 200_000;
 const MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const HELP: &str = "org.apache.maven.plugins:maven-help-plugin:3.5.1";
 const DEPS: &str = "org.apache.maven.plugins:maven-dependency-plugin:3.8.1:build-classpath";
 const CP_FILE: &str = "target/no-ide-incremental-classpath.txt";
 #[derive(Clone, Serialize, Deserialize)]
-struct Module { path:String, selector:String, gav:String, artifact:String, packaging:String, inputs:Vec<PathBuf>, output:PathBuf, artifact_dir:PathBuf, deps:Vec<usize> }
+struct Module { path:String, selector:String, gav:String, artifact:String, packaging:String, inputs:Vec<PathBuf>, output:PathBuf, artifact_dir:PathBuf, deps:Vec<usize>, #[serde(default)] main_class:String, #[serde(default)] hot_warnings:Vec<String> }
 #[derive(Clone, Serialize, Deserialize, Default, PartialEq)]
 struct Stamp { input:String, output:String }
 #[derive(Clone, Serialize, Deserialize)]
@@ -41,7 +41,7 @@ fn artifacts(dir:&Path)->Result<Vec<PathBuf>>{if !dir.exists(){return Ok(vec![di
 fn stamps(modules:&[Module])->Result<Vec<Stamp>>{modules.iter().map(|m|{let mut output=vec![m.output.clone()];output.extend(artifacts(&m.artifact_dir)?);Ok(Stamp{input:paths_hash(&m.inputs)?,output:paths_hash(&output)?})}).collect()}
 fn xml_child<'a,'d>(n:roxmltree::Node<'a,'d>,name:&str)->Option<roxmltree::Node<'a,'d>>{n.children().find(|n|n.has_tag_name(name))}
 fn text_at(n:roxmltree::Node,path:&[&str])->String{let mut at=n;for name in path{let Some(next)=xml_child(at,name)else{return String::new()};at=next;}at.text().unwrap_or("").trim().to_string()}
-fn gav(n:roxmltree::Node)->String{["groupId","artifactId","version"].iter().map(|k|text_at(n,&[k])).collect::<Vec<_>>().join(":")}
+fn gav(n:roxmltree::Node)->String{["groupId","artifactId","version"].iter().map(|k|text_at(n,&[k])).collect::<Vec<_>>().join(":" )}
 fn checked_coord(s:&str)->Result<()>{if s.is_empty()||s.contains("${")||!s.chars().all(|c|c.is_alphanumeric()||".-_".contains(c)){return fail("Maven 坐标无法安全映射到本地仓库，未缓存本次构建")}Ok(())}
 fn input_path(root:&Path,module:&Path,value:&str)->Result<PathBuf>{
  if value.is_empty()||value.contains("${"){return fail("Maven 有尚未解析的输入目录，未跳过构建")}
@@ -84,7 +84,15 @@ fn parse_model(xml:&str,root:&Path,plan:&maven::Plan,repository:&Path)->Result<(
   if let Some(ds)=xml_child(n,"dependencies"){for d in ds.children().filter(|n|n.has_tag_name("dependency")){refs.push(gav(d));}}
   if let Some(parent)=xml_child(n,"parent"){refs.push(gav(parent));}
   if let Some(build)=xml_child(n,"build"){for x in build.descendants().filter(|x|x.has_tag_name("plugin")||x.has_tag_name("extension")||x.has_tag_name("dependency")){refs.push(gav(x));}}
-  all_refs.push(refs);modules.push(Module{path,selector,gav:gav(n),artifact,packaging,inputs,output,artifact_dir,deps:vec![]});
+  let mut main_class=text_at(n,&["properties","start-class"]);let mut hot_warnings=vec![];
+  if let Some(plugins)=xml_child(n,"build").and_then(|b|xml_child(b,"plugins")){for plugin in plugins.children().filter(|n|n.has_tag_name("plugin")){
+   if text_at(plugin,&["artifactId"])=="spring-boot-maven-plugin" {if let Some(c)=xml_child(plugin,"configuration"){
+    let main=text_at(c,&["mainClass"]);if !main.is_empty(){main_class=main;}
+    for key in ["directories","additionalClasspathElements","folders","excludes","excludeGroupIds","includes","agents","jvmArguments","arguments","environmentVariables","systemPropertyVariables","profiles"]{if xml_child(c,key).is_some(){hot_warnings.push(format!("Spring Maven 插件 {} 需要在可视化运行配置中显式对齐；当前热替换启动不隐式转换此字段",key));}}
+    for key in ["useTestClasspath","addResources"]{if text_at(c,&[key])=="true"{hot_warnings.push(format!("Spring Maven 插件 {}=true 的自定义类路径尚不支持热替换启动",key));}}
+   }}
+  }}
+  all_refs.push(refs);modules.push(Module{path,selector,gav:gav(n),artifact,packaging,inputs,output,artifact_dir,deps:vec![],main_class,hot_warnings});
  }
  let ids:BTreeMap<_,_>=modules.iter().enumerate().map(|(i,m)|(m.gav.clone(),i)).collect();if ids.len()!=modules.len(){return fail("有效 Maven 模型存在重复坐标，未跳过构建")}
  for(i,refs)in all_refs.iter().enumerate(){modules[i].deps=refs.iter().filter_map(|g|ids.get(g).copied()).filter(|j|*j!=i).collect();modules[i].deps.sort();modules[i].deps.dedup();}
@@ -181,10 +189,28 @@ pub async fn build(project:&Project,original:&RunConfig,cfg:&RunConfig,store:&St
 }
 #[cfg(test)]mod tests{
  use super::*;
- fn module(name:&str,deps:Vec<usize>)->Module{Module{path:name.into(),selector:name.into(),gav:name.into(),artifact:name.into(),packaging:"jar".into(),inputs:vec![],output:PathBuf::new(),artifact_dir:PathBuf::new(),deps}}
+ fn module(name:&str,deps:Vec<usize>)->Module{Module{path:name.into(),selector:name.into(),gav:name.into(),artifact:name.into(),packaging:"jar".into(),inputs:vec![],output:PathBuf::new(),artifact_dir:PathBuf::new(),deps,main_class:String::new(),hot_warnings:vec![]}}
  #[test]fn impact_is_downstream_not_upstream(){let m=vec![module("base",vec![]),module("business",vec![0]),module("app",vec![1]),module("unrelated",vec![])];assert_eq!(downstream(&m,[1].into()),[1,2].into());assert_eq!(downstream(&m,[2].into()),[2].into());}
  #[test]fn hash_is_content_and_names_not_timestamp(){let t=tempfile::tempdir().unwrap();std::fs::write(t.path().join("a"),"old").unwrap();let a=paths_hash(&[t.path().into()]).unwrap();std::fs::write(t.path().join("a"),"new").unwrap();assert_ne!(a,paths_hash(&[t.path().into()]).unwrap());std::fs::remove_file(t.path().join("a")).unwrap();assert_ne!(a,paths_hash(&[t.path().into()]).unwrap());}
  #[test]fn explicitly_declared_resources_are_never_name_filtered(){let t=tempfile::tempdir().unwrap();let nested=t.path().join("node_modules");std::fs::create_dir(&nested).unwrap();std::fs::write(nested.join("resource"),"a").unwrap();let a=paths_hash(&[t.path().into()]).unwrap();std::fs::write(nested.join("resource"),"b").unwrap();assert_ne!(a,paths_hash(&[t.path().into()]).unwrap());}
  #[test]fn profile_marker_existence_is_part_of_model_context(){let t=tempfile::tempdir().unwrap();let root=native_path(t.path().canonicalize().unwrap());std::fs::write(root.join("pom.xml"),"<project><profiles><profile><activation><file><exists>${project.basedir}/activate</exists></file></activation></profile></profiles></project>").unwrap();let inputs=profile_markers(&root,&root).unwrap();let old=paths_hash(&inputs).unwrap();std::fs::write(root.join("activate"),"").unwrap();assert_ne!(old,paths_hash(&inputs).unwrap());}
  #[test]fn targeted_command_does_not_reintroduce_upstream(){let c=CommandSpec{program:"mvn".into(),args:vec!["-f".into(),"pom.xml".into(),"-pl".into(),"app".into(),"--also-make".into(),"clean".into(),"install".into()]};let out=subset(&c,&[module("a",vec![]),module("app",vec![0])],&[1].into());assert!(!out.args.contains(&"--also-make".into()));assert!(out.args.ends_with(&["-pl".into(),"app".into()]));}
+}
+
+/// Read only a successfully verified model. Snapshot code never invents paths
+/// from artifact names without checking Maven's resolved model and outputs.
+#[derive(Clone)]
+pub struct HotModel { pub key:String, pub entry:PathBuf, pub mappings:Vec<(PathBuf,PathBuf)>, pub main_class:String }
+pub fn hot_model(project:&Project,original:&RunConfig,cache:&Path)->Result<HotModel>{
+ let path=cache.join(format!("{}.json",hbytes(format!("{}\0{}\0{}",project.root.display(),project.id,original.id).as_bytes())));
+ let r=load(&path).ok_or_else(||Error("未能建立可信 Maven 模型，不能创建热替换快照；请查看构建日志或选择兼容重启模式".into()))?;
+ if !r.dirty.is_empty(){return fail("构建尚未成功，不能应用新快照")}
+ if stamps(&r.modules)?!=r.stamps{return fail("构建后源码或产物再次变化，未应用混合版本；请再次应用改动")}
+ let dir=inside(&project.root,&original.cwd)?.canonicalize()?;
+ let entry=r.modules.iter().find(|m|inside(&project.root,&m.path).and_then(|p|Ok(p.canonicalize()?)).map(|p|p==dir).unwrap_or(false)).ok_or_else(||Error("有效模型中找不到入口模块".into()))?;
+ if !entry.hot_warnings.is_empty(){return fail(entry.hot_warnings.join("；"));}
+ let mut mappings=vec![];
+ for m in &r.modules {if m.packaging=="jar" {let version=m.gav.rsplit(':').next().unwrap();mappings.push((m.artifact_dir.join(format!("{}-{}.jar",m.artifact,version)),m.output.clone()));}}
+ let key=hbytes(format!("{}\0{}\0{}",r.context,r.external_hash,serde_json::to_string(&r.modules)?).as_bytes());
+ Ok(HotModel{key,entry:entry.output.clone(),mappings,main_class:entry.main_class.clone()})
 }

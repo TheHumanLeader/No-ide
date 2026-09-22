@@ -1,0 +1,7 @@
+    <section v-if="form.launcher.kind==='spring-maven'" class="config-build-tool hot-options">
+      <strong>代码更新方式</strong>
+      <label>更新模式<select :value="form.launcher.update_mode||'restart'" @change="form.launcher.update_mode=$event.target.value;commandPreview=null" aria-label="代码更新方式"><option value="hotswap">优先原地热替换（Java 8+）</option><option value="restart">兼容模式：增量构建后重启</option></select></label>
+      <p v-if="form.launcher.update_mode==='hotswap'" class="live-help">修改支持的已加载方法体时保留 JVM 和已有对象状态，不主动断开现有连接。结构、注解、资源、初始化或未加载类发生变化时，显示“需重启”，由你确认，不会偷偷重启。使用私有运行副本，不让 Maven 构建中间产物污染正在运行的类路径；本实例关闭 DevTools 自动重启。</p>
+      <p v-else class="live-help">复用未变化模块，但应用仍会重启。原配置继续使用此模式，选择上方热替换可启用新能力。</p>
+      <label v-if="form.launcher.update_mode==='hotswap'">启动主类（可选）<input v-model="form.launcher.main_class" aria-label="启动主类" placeholder="自动从编译后的启动模块识别；多个入口时才需指定"></label>
+    </section>

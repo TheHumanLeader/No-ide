@@ -74,7 +74,7 @@ def main():
    browser=pw.chromium.launch(executable_path=shutil.which('chromium') or None,args=['--no-sandbox']);page=browser.new_page(viewport={'width':1440,'height':1100});page.on('pageerror',lambda e:report['errors'].append(str(e)));page.goto(n.url)
    result=page.evaluate('''port=>new Promise((resolve,reject)=>{const w=new WebSocket('ws://127.0.0.1:'+port+'/ws');const t=setTimeout(()=>{w.close();reject(Error('timeout'))},10000);w.onopen=()=>w.send('probe');w.onmessage=e=>{clearTimeout(t);resolve(e.data);w.close()};w.onerror=()=>reject(Error('ws'))})''',i['port'])
    check('Real WebSocket handler uses recompiled shared constant',result=='two')
-   expect(page.get_by_role('button',name='增量构建',exact=True)).to_be_visible();expect(page.get_by_role('button',name='清理重建',exact=True)).to_be_visible();check('Normal incremental and full repair are separate controls')
+   expect(page.get_by_role('button',name='应用改动',exact=True)).to_be_visible();expect(page.get_by_role('button',name='清理重建',exact=True)).to_be_visible();check('Normal incremental and full repair are separate controls')
    page.once('dialog',lambda d:d.dismiss());page.get_by_role('button',name='清理重建',exact=True).click();check('Declined repair leaves actual process running',view(n,i)['state']=='running')
    page.screenshot(path=str(OUT/'native-incremental-044.png'),full_page=True);browser.close()
   stop(n,p,i);removed.unlink();resource.unlink()

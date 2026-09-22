@@ -4,7 +4,7 @@ use serde::Serialize;
 use serde_json::{json,Value};
 use std::{collections::{HashMap,VecDeque},path::PathBuf,sync::{Arc,atomic::{AtomicBool,Ordering}},time::{SystemTime,UNIX_EPOCH}};
 use tokio::{sync::{Mutex,broadcast,mpsc,watch,Semaphore},io::{AsyncRead,AsyncReadExt},time::{Duration,Instant,timeout}};
-#[derive(Clone,Serialize,Default)]pub struct RunView{pub instance:String,pub state:String,pub pid:Option<u32>,pub error:Option<String>,pub revision:u64,pub readiness:String}
+#[derive(Clone,Serialize,Default)]pub struct RunView{pub instance:String,pub state:String,pub pid:Option<u32>,pub error:Option<String>,pub revision:u64,pub readiness:String,pub update_status:String,pub pending_reason:Option<String>}
 #[derive(Clone,Serialize)]pub struct Log{pub seq:u64,pub time:u64,pub instance:String,pub stream:String,pub text:String}
 #[derive(Default)]struct LogBuffer{seq:u64,bytes:usize,rows:VecDeque<Log>}
 pub struct Hub{pub tx:broadcast::Sender<Value>,logs:Mutex<LogBuffer>}
@@ -15,11 +15,20 @@ impl Hub{
 }
 #[derive(Clone)]pub struct Runtime{groups:Arc<Mutex<HashMap<String,Group>>>,pub states:Arc<Mutex<HashMap<String,RunView>>>,pub hub:Arc<Hub>,builds:Arc<Semaphore>,maven_builds:Arc<Semaphore>,build_cache:Arc<PathBuf>}
 #[derive(Clone)]struct Group{tx:mpsc::Sender<Control>,cancel:watch::Sender<u64>,project:String}
-enum Control{Start(Instance,Store),Stop(String),Update(bool),Shutdown}
-struct Running{child:process::Managed,readers:Vec<tokio::task::JoinHandle<()>>,instance:Instance,deadline:Instant,started_at:Instant,ready:bool}
+enum Control{Start(Instance,Store),Stop(String),Update(bool),Restart(String),Shutdown}
+struct Running{child:process::Managed,readers:Vec<tokio::task::JoinHandle<()>>,instance:Instance,deadline:Instant,started_at:Instant,ready:bool,hot:Option<crate::hot::Session>}
 impl Runtime{
  pub fn new(build_cache:PathBuf)->Self{Self{build_cache:Arc::new(build_cache),groups:Default::default(),states:Default::default(),hub:Arc::new(Hub::new()),builds:Arc::new(Semaphore::new(2)),maven_builds:Arc::new(Semaphore::new(1))}}
  async fn state(&self,id:&str,state:&str,pid:Option<u32>,error:Option<String>,ready:&str,bump:bool){let mut states=self.states.lock().await;let s=states.entry(id.into()).or_insert_with(||RunView{instance:id.into(),..Default::default()});s.state=state.into();s.pid=pid;s.error=error;s.readiness=ready.into();if bump{s.revision+=1;}let _=self.hub.tx.send(json!({"type":"state","data":s}));}
+ async fn update_result(&self,id:&str,status:&str,reason:Option<String>){let mut states=self.states.lock().await;let v=states.entry(id.into()).or_insert_with(||RunView{instance:id.into(),..Default::default()});v.update_status=status.into();v.pending_reason=reason;let _=self.hub.tx.send(json!({"type":"state","data":v}));}
+ async fn apply_hot(&self,p:&Project,c:&RunConfig,children:&mut HashMap<String,Running>)->Result<()>{
+  let started=Instant::now();let mut batch=vec![];
+  for(id,r)in children.iter(){let session=r.hot.as_ref().ok_or_else(||Error("该实例没有热替换 Agent，需要重新启动一次启用".into()))?;let u=session.changes(p,c,&self.build_cache).await?;session.check(&u).await?;batch.push((id.clone(),u));}
+  for(id,u)in batch{let r=children.get_mut(&id).unwrap();let count=r.hot.as_mut().unwrap().apply(u).await?;
+   let text=if count==0{"运行快照与新产物一致，未重启".to_string()}else{format!("已原地热替换 {} 个类；JVM/PID 未变；应用耗时 {} ms",count,started.elapsed().as_millis())};
+   self.hub.log(&id,"hotswap",&text).await;self.state(&id,"running",r.child.0.id(),None,&text,count>0).await;self.update_result(&id,if count==0{"current"}else{"hotswapped"},None).await;
+  }Ok(())
+ }
  pub async fn views(&self)->Vec<RunView>{self.states.lock().await.values().cloned().collect()}
  pub async fn project_active(&self,p:&Project)->bool{let s=self.states.lock().await;p.instances.iter().any(|i|s.get(&i.id).map(|v|["starting","running","building","stopping"].contains(&v.state.as_str())).unwrap_or(false))}
  pub async fn start(&self,p:Project,i:Instance,store:Store)->Result<()> {
@@ -31,7 +40,7 @@ impl Runtime{
   self.state(&i.id,"starting",None,None,"等待启动",false).await;
   if groups[&key].tx.try_send(Control::Start(i.clone(),launch_store)).is_err(){self.state(&i.id,"error",None,Some("操作队列已满".into()),"",false).await;return fail("操作队列已满，请稍后重试")};Ok(())
  }
- pub async fn control(&self,p:&Project,i:&Instance,op:&str)->Result<()>{let key=format!("{}/{}",p.id,i.config_id);let groups=self.groups.lock().await;let g=groups.get(&key).ok_or_else(||Error("实例尚未运行".into()))?;if op=="stop"{g.cancel.send_modify(|v|*v+=1);g.tx.try_send(Control::Stop(i.id.clone())).map_err(|_|Error("控制队列已满".into()))?;}else{g.tx.try_send(Control::Update(op=="repair")).map_err(|_|Error("控制队列已满".into()))?;}Ok(())}
+ pub async fn control(&self,p:&Project,i:&Instance,op:&str)->Result<()>{let key=format!("{}/{}",p.id,i.config_id);let groups=self.groups.lock().await;let g=groups.get(&key).ok_or_else(||Error("实例尚未运行".into()))?;if op=="stop"{g.cancel.send_modify(|v|*v+=1);g.tx.try_send(Control::Stop(i.id.clone())).map_err(|_|Error("控制队列已满".into()))?;}else if op=="restart"{g.tx.try_send(Control::Restart(i.id.clone())).map_err(|_|Error("控制队列已满".into()))?;}else{g.tx.try_send(Control::Update(op=="repair")).map_err(|_|Error("控制队列已满".into()))?;}Ok(())}
  pub async fn forget_idle(&self,p:&Project)->Result<()> {if self.project_active(p).await{return fail("修改运行配置前请先停止本项目实例")};let mut groups=self.groups.lock().await;let keys:Vec<_>=groups.iter().filter(|(_,g)|g.project==p.id).map(|(k,_)|k.clone()).collect();for k in keys{if let Some(g)=groups.remove(&k){let _=g.tx.try_send(Control::Shutdown);}}Ok(())}
  pub async fn shutdown(&self){let groups=self.groups.lock().await;for g in groups.values(){g.cancel.send_modify(|v|*v+=1);let _=g.tx.send(Control::Shutdown).await;}}
  async fn build(&self,project:&Project,original:&RunConfig,store:&Store,cancel:&watch::Sender<u64>,force:bool)->Result<bool> {
@@ -47,14 +56,17 @@ impl Runtime{
   tokio::select!{r=run=>r,_=cancelled.changed()=>fail("构建已取消；未把未完成产物标为最新")}
  }
  async fn launch(&self,project:&Project,cfg:&RunConfig,store:&Store,i:Instance)->Result<Running>{
-  let root=&project.root;let cfg=crate::launch::resolve(store,project,cfg,Some(&i),true)?;
+  let root=&project.root;let original=cfg;let mut cfg=crate::launch::resolve(store,project,original,Some(&i),true)?;
+  let mut hot=if crate::hot::enabled(original){let(command,session)=crate::hot::prepare(project,original,&cfg,store,&i,&self.build_cache,self.hub.clone()).await?;cfg.command=command;Some(session)}else{None};
   if let Some(port)=i.port{if matches!(timeout(Duration::from_millis(200),tokio::net::TcpStream::connect(("127.0.0.1",port))).await,Ok(Ok(_))){return fail(format!("端口 {port} 已有监听程序，未启动实例"));}}
   let cwd=inside(root,&cfg.cwd)?;if !cwd.is_dir(){return fail("运行目录不存在")}
   let mut env=cfg.env.clone();if cfg.launcher.is_none(){env.extend(i.env.clone());}let extra=if cfg.launcher.is_some(){&[][..]}else{i.args.as_slice()};let cmd=process::command(&cfg.command,&cwd,i.port,extra,&env)?;self.hub.log(&i.id,"launch-plan",&format!("启动程序：{}\n工作目录：{}\n所选 Java：{}",cfg.command.program,cwd.display(),env.get("JAVA_HOME").map(String::as_str).unwrap_or("非 Java / 高级命令"))).await;
   let mut child=process::spawn(cmd)?;
   let encoding=cfg.output_encoding;let mut readers=vec![];if let Some(o)=child.0.stdout().take(){let hub=self.hub.clone();let id=i.id.clone();readers.push(tokio::spawn(async move{pump(o,hub,id,"stdout",encoding).await}));}if let Some(e)=child.0.stderr().take(){let hub=self.hub.clone();let id=i.id.clone();readers.push(tokio::spawn(async move{pump(e,hub,id,"stderr",encoding).await}));}
+  if let Some(session)=hot.as_mut(){if let Err(e)=session.wait_ready().await{let _=child.0.start_kill();let _=child.0.wait().await;for t in readers{t.abort();}return Err(e)}if session.java_pid!=child.0.id(){let _=child.0.start_kill();for t in readers{t.abort();}return fail("Agent 返回的 Java PID 与实例不一致，已停止")}}
   self.state(&i.id,if i.port.is_some(){"starting"}else{"running"},child.0.id(),None,if i.port.is_some(){"等待 TCP 端口"}else{"进程已启动；未配置应用就绪检查"},true).await;
-  Ok(Running{child,readers,instance:i,started_at:Instant::now(),deadline:Instant::now()+Duration::from_secs(if cfg.launcher.as_ref().map(|l|l.kind=="spring-maven").unwrap_or(false){120}else{30}),ready:false})
+  self.update_result(&i.id,if hot.is_some(){"hot-ready"}else{"restart-mode"},None).await;
+  Ok(Running{child,readers,instance:i,started_at:Instant::now(),deadline:Instant::now()+Duration::from_secs(if cfg.launcher.as_ref().map(|l|l.kind=="spring-maven").unwrap_or(false){120}else{30}),ready:false,hot})
  }
  async fn stop_run(&self,mut r:Running){self.state(&r.instance.id,"stopping",r.child.0.id(),None,"",false).await;let _=r.child.0.start_kill();let _=timeout(Duration::from_secs(3),r.child.0.wait()).await;for t in r.readers{t.abort();}self.state(&r.instance.id,"stopped",None,None,"",false).await;}
  async fn actor(self,project:Project,cfg:RunConfig,mut store:Store,mut rx:mpsc::Receiver<Control>,cancel:watch::Sender<u64>){
@@ -73,17 +85,29 @@ impl Runtime{
      store=snapshot;if children.contains_key(&i.id){continue}
      let is_maven=cfg.launcher.as_ref().map(|l|["spring-maven","maven-main"].contains(&l.kind.as_str())).unwrap_or(false);
      let result=if children.is_empty()||is_maven{self.build(&project,&cfg,&store,&cancel,false).await}else{Ok(false)};
-     if matches!(result,Ok(true))&&!children.is_empty(){let old=std::mem::take(&mut children);for(_,running)in old{let old_i=running.instance.clone();self.stop_run(running).await;match self.launch(&project,&cfg,&store,old_i.clone()).await{Ok(r)=>{children.insert(old_i.id.clone(),r);},Err(e)=>self.state(&old_i.id,"error",None,Some(e.0),"",false).await}}}
+     if matches!(result,Ok(true))&&!children.is_empty()&&crate::hot::enabled(&cfg){if let Err(e)=self.apply_hot(&project,&cfg,&mut children).await{for r in children.values(){self.update_result(&r.instance.id,"restart-required",Some(e.0.clone())).await;}}}
+     if matches!(result,Ok(true))&&!children.is_empty()&&!crate::hot::enabled(&cfg){let old=std::mem::take(&mut children);for(_,running)in old{let old_i=running.instance.clone();self.stop_run(running).await;match self.launch(&project,&cfg,&store,old_i.clone()).await{Ok(r)=>{children.insert(old_i.id.clone(),r);},Err(e)=>self.state(&old_i.id,"error",None,Some(e.0),"",false).await}}}
      match result{Ok(_)=>match self.launch(&project,&cfg,&store,i.clone()).await{Ok(r)=>{children.insert(i.id.clone(),r);},Err(e)=>self.state(&i.id,"error",None,Some(e.0),"",false).await},Err(e)=>self.state(&i.id,"error",None,Some(e.0),"",false).await}
     },
     Event::Control(Some(Control::Stop(id)))=>{if let Some(r)=children.remove(&id){self.stop_run(r).await;}else{self.state(&id,"stopped",None,None,"",false).await;}},
+    Event::Control(Some(Control::Restart(id)))=>{
+     if !children.contains_key(&id){continue}
+     self.state(&id,"building",children[&id].child.0.id(),None,"检查当前源码，准备重启此实例",false).await;
+     match self.build(&project,&cfg,&store,&cancel,false).await{
+      Err(e)=>self.state(&id,"running",children[&id].child.0.id(),Some(e.0),"构建失败，未重启",false).await,
+      Ok(_)=>{let r=children.remove(&id).unwrap();let i=r.instance.clone();self.stop_run(r).await;match self.launch(&project,&cfg,&store,i).await{Ok(r)=>{children.insert(id,r);},Err(e)=>self.state(&id,"error",None,Some(e.0),"",false).await}}
+     }
+    },
     e @ (Event::Files|Event::Control(Some(Control::Update(_))))=>{
      let manual=matches!(e,Event::Control(Some(Control::Update(_))));let force=matches!(e,Event::Control(Some(Control::Update(true))));
      if children.is_empty(){continue}tokio::time::sleep(Duration::from_millis(350)).await;while evrx.try_recv().is_ok(){}
-     for r in children.values(){self.state(&r.instance.id,"building",r.child.0.id(),None,"旧进程保留，正在构建",false).await;}
+     for r in children.values(){self.state(&r.instance.id,"building",r.child.0.id(),None,"旧进程保留，正在构建",false).await;self.update_result(&r.instance.id,"building",None).await;}
      deleted.store(false,Ordering::Release);
      match self.build(&project,&cfg,&store,&cancel,force).await{
-      Err(e)=>{for r in children.values(){self.state(&r.instance.id,"running",r.child.0.id(),Some(e.0.clone()),"构建失败；No-ide 未停止旧进程",false).await;}},
+      Err(e)=>{for r in children.values(){self.state(&r.instance.id,"running",r.child.0.id(),Some(e.0.clone()),"构建失败；No-ide 未停止旧进程",false).await;self.update_result(&r.instance.id,"build-failed",Some(e.0.clone())).await;}},
+      Ok(_)if crate::hot::enabled(&cfg)&&!force=>{if let Err(e)=self.apply_hot(&project,&cfg,&mut children).await{
+       for r in children.values(){self.state(&r.instance.id,"running",r.child.0.id(),None,"改动需要确认重启；旧实例继续运行",false).await;self.update_result(&r.instance.id,"restart-required",Some(e.0.clone())).await;self.hub.log(&r.instance.id,"update-pending",&e.0).await;}
+      }},
       Ok(false)if !manual=>{for r in children.values(){self.state(&r.instance.id,"running",r.child.0.id(),None,"源码与产物未变，跳过构建及重启",false).await;}},
       Ok(_)=>{let old=std::mem::take(&mut children);for(_,r)in old{let i=r.instance.clone();self.stop_run(r).await;match self.launch(&project,&cfg,&store,i.clone()).await{Ok(r)=>{children.insert(i.id.clone(),r);},Err(e)=>self.state(&i.id,"error",None,Some(e.0),"",false).await}}}
      }

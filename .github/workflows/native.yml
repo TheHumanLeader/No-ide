@@ -1,7 +1,7 @@
 name: Native executor
 on:
   push:
-    branches: [main, 'backend/rust-v0.3', 'feature/easy-run-v0.4']
+    branches: [main, 'backend/rust-v0.3', 'feature/easy-run-v0.4', 'feature/hotswap-v0.5']
   pull_request:
   workflow_dispatch:
 permissions:
@@ -83,6 +83,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: choco install sliksvn -y --no-progress
+      - name: Build Java 8 compatible HotSwap agent
+        run: |
+          mvn -B -ntp -f agent/pom.xml -DskipTests package
+          python -c "from pathlib import Path; import os; f=open(os.environ['GITHUB_ENV'],'a'); f.write('NO_IDE_AGENT='+str(Path('agent/target/no-ide-agent.jar').resolve())+'\n')"
       - run: cargo test --manifest-path backend/Cargo.toml --all-targets
       - run: cargo build --manifest-path backend/Cargo.toml --release
       - uses: actions/download-artifact@v4
@@ -115,6 +119,9 @@ jobs:
       - name: Actual incremental module reuse and deleted source regression
         if: runner.os == 'Linux' || runner.os == 'Windows'
         run: python tests/maven-incremental-044.py
+      - name: Actual HotSwap same JVM, state and WebSocket regression
+        if: runner.os == 'Linux' || runner.os == 'Windows'
+        run: python tests/hotswap-050.py
       - name: Log follow through actual stdout and WebSocket
         if: runner.os == 'Linux' || runner.os == 'Windows'
         run: python tests/log-scroll.py
@@ -124,7 +131,7 @@ jobs:
         if: always()
         run: |
           cargo fmt --manifest-path backend/Cargo.toml
-          python -c "from pathlib import Path; import zipfile; r=Path('backend'); z=zipfile.ZipFile('native-source.zip','w',zipfile.ZIP_DEFLATED); [z.write(p) for p in [r/'Cargo.toml',r/'Cargo.lock',*r.glob('src/*.rs')] if p.is_file()]; z.close()"
+          python -c "from pathlib import Path; import zipfile; r=Path('backend'); z=zipfile.ZipFile('native-source.zip','w',zipfile.ZIP_DEFLATED); [z.write(p) for p in [r/'Cargo.toml',r/'Cargo.lock',*r.glob('src/**/*.rs')] if p.is_file()]; z.close()"
       - uses: actions/upload-artifact@v4
         if: always() && runner.os == 'Linux'
         with:
