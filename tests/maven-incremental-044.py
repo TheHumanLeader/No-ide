@@ -93,11 +93,10 @@ def main():
   check('Explicit full repair includes all required modules',set(sel['selected'])=={'.','common','stable','app'} and sel['mode']=='baseline')
   stop(n,p,i)
   # A file-activated Profile changes the source root without changing the POM.
-  # Cache invalidation must re-read the Maven effective model, not just compile
-  # the previous graph/source folder and accidentally claim freshness.
+  # Use a profile property; sourceDirectory belongs to project Build, not BuildBase.
   cpom=root/'common/pom.xml'
   original_pom=cpom.read_text(encoding='utf8')
-  put(cpom,original_pom.replace('</project>', '<profiles><profile><id>alternate-source</id><activation><file><exists>${basedir}/alternate.flag</exists></file></activation><build><sourceDirectory>${project.basedir}/src/profile-on/java</sourceDirectory></build></profile></profiles></project>'))
+  put(cpom,original_pom.replace('</project>', '<properties><fixture.source>${project.basedir}/src/main/java</fixture.source></properties><build><sourceDirectory>${fixture.source}</sourceDirectory></build><profiles><profile><id>alternate-source</id><activation><file><exists>${basedir}/alternate.flag</exists></file></activation><properties><fixture.source>${project.basedir}/src/profile-on/java</fixture.source></properties></profile></profiles></project>'))
   alt=root/'common/src/profile-on/java/fixture/shared/Value.java';put(alt,common_code('profile-source'))
   start(n,p,i,c,'POM edit revalidates model','baseline',['.','common','stable','app']);stop(n,p,i)
   flag=root/'common/alternate.flag';put(flag,'')
