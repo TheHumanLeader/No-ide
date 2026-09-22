@@ -91,6 +91,21 @@ def main():
   rev=view(n,i)['revision'];n.api('run.repair',{'project':p['id'],'instance':i['id'],'confirmed':True})
   wait_for(lambda:view(n,i).get('revision',0)>rev and response(i['port']),300);sel=selection(n,c)
   check('Explicit full repair includes all required modules',set(sel['selected'])=={'.','common','stable','app'} and sel['mode']=='baseline')
+  stop(n,p,i)
+  # A file-activated Profile changes the source root without changing the POM.
+  # Cache invalidation must re-read the Maven effective model, not just compile
+  # the previous graph/source folder and accidentally claim freshness.
+  cpom=root/'common/pom.xml'
+  original_pom=cpom.read_text(encoding='utf8')
+  put(cpom,original_pom.replace('</project>', '<profiles><profile><id>alternate-source</id><activation><file><exists>${basedir}/alternate.flag</exists></file></activation><build><sourceDirectory>${project.basedir}/src/profile-on/java</sourceDirectory></build></profile></profiles></project>'))
+  alt=root/'common/src/profile-on/java/fixture/shared/Value.java';put(alt,common_code('profile-source'))
+  start(n,p,i,c,'POM edit revalidates model','baseline',['.','common','stable','app']);stop(n,p,i)
+  flag=root/'common/alternate.flag';put(flag,'')
+  profile=start(n,p,i,c,'file Profile activated','baseline',['.','common','stable','app'])
+  check('File activation switches actual source root',profile['common']=='profile-source');stop(n,p,i)
+  flag.unlink()
+  profile=start(n,p,i,c,'file Profile deactivated','baseline',['.','common','stable','app'])
+  check('Removing Profile marker restores original source model',profile['common']=='two')
   check('No unrelated module built',not(root/'unrelated/target/classes').exists())
   check('No uncaught browser errors',not report['errors'])
   report['health']=json.load(urllib.request.urlopen(n.base+'/api/health'))

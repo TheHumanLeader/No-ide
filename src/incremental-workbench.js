@@ -13,7 +13,7 @@ export function createLiveWorkbench(health) {
     ...base,
     template: base.template.replace(oldButton, newButton).replace(
       '停止后首次启动和“重新构建”会清理旧产物；普通文件修改走增量构建，删除文件时重新清理。',
-      '首次建立可信基线后，只重编有变化及受影响的模块。未变模块复用，停止或退出后也会记住。删除类和资源会清理对应受影响模块；完整清理重建是独立修复操作。'
+      '首次建立可信基线后，只重编有变化及受影响的模块。未变模块复用，停止或退出后也会记住。删除类和资源会清理对应受影响模块；完整清理重建是独立修复操作。下方预览为完整基线命令，日常实际构建范围在日志中显示。'
     ),
     setup(...args) {
       const state = base.setup(...args)

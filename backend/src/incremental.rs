@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::{BTreeMap, BTreeSet}, io::{Read, Write}, path::{Path, PathBuf}, sync::Arc};
 use tokio::time::Instant;
-const SCHEMA: u32 = 1;
+const SCHEMA: u32 = 2;
 const MAX_FILES: usize = 200_000;
 const MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const HELP: &str = "org.apache.maven.plugins:maven-help-plugin:3.5.1";
@@ -31,7 +31,7 @@ fn hash_path(path:&Path,h:&mut Sha256,budget:&mut Budget,depth:usize)->Result<()
  let meta=match std::fs::symlink_metadata(path){Ok(m)=>m,Err(e)if e.kind()==std::io::ErrorKind::NotFound=>{part(h,b"missing");return Ok(())},Err(e)=>return Err(e.into())};
  if meta.file_type().is_symlink(){return fail(format!("构建输入或输出含符号链接：{}；当前不缓存该布局",path.display()))}
  budget.files+=1;if budget.files>MAX_FILES{return fail("构建指纹超过 200000 项，未使用截断结果")}
- if meta.is_dir(){part(h,b"directory");let mut entries=std::fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;entries.sort_by_key(|e|e.file_name());for e in entries{if [".git",".svn","node_modules","__pycache__"].iter().any(|n|e.file_name()==*n){continue}hash_path(&e.path(),h,budget,depth+1)?;}}
+ if meta.is_dir(){part(h,b"directory");let mut entries=std::fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;entries.sort_by_key(|e|e.file_name());for e in entries{hash_path(&e.path(),h,budget,depth+1)?;}}
  else if meta.is_file(){part(h,b"file");let mut f=std::fs::File::open(path)?;let mut buf=[0u8;65536];let mut own=Sha256::new();loop{let n=f.read(&mut buf)?;if n==0{break}budget.bytes+=n as u64;if budget.bytes>MAX_BYTES{return fail("构建指纹读取超过 4 GiB，未跳过构建")}own.update(&buf[..n]);}part(h,&own.finalize());}
  else{return fail("构建指纹不读取设备或管道")}
  Ok(())
@@ -90,10 +90,22 @@ fn parse_model(xml:&str,root:&Path,plan:&maven::Plan,repository:&Path)->Result<(
  for(i,refs)in all_refs.iter().enumerate(){modules[i].deps=refs.iter().filter_map(|g|ids.get(g).copied()).filter(|j|*j!=i).collect();modules[i].deps.sort();modules[i].deps.dedup();}
  opaque.sort();opaque.dedup();Ok((modules,opaque))
 }
-fn load(path:&Path)->Option<Record>{let meta=path.metadata().ok()?;if meta.len()>16*1024*1024{return None}let r:Record=serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;(r.schema==SCHEMA&&r.modules.len()==r.stamps.len()&&r.modules.len()<=256).then_some(r)}
+fn load(path:&Path)->Option<Record>{let meta=path.metadata().ok()?;if meta.len()>16*1024*1024{return None}let r:Record=serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;(r.schema==SCHEMA&&!r.modules.is_empty()&&r.modules.len()==r.stamps.len()&&r.modules.len()<=256&&r.dirty.iter().all(|i|*i<r.modules.len())&&r.modules.iter().all(|m|m.deps.iter().all(|i|*i<r.modules.len()))).then_some(r)}
 fn save(path:&Path,r:&Record)->Result<()>{let parent=path.parent().ok_or_else(||Error("无构建缓存目录".into()))?;std::fs::create_dir_all(parent)?;let mut f=tempfile::NamedTempFile::new_in(parent)?;f.write_all(&serde_json::to_vec(r)?)?;f.as_file().sync_all()?;f.persist(path).map_err(|e|Error(e.to_string()))?;Ok(())}
+// File-activated profiles are build inputs too. A marker changing must force
+// a fresh effective model rather than apply an old dependency/source graph.
+fn profile_markers(root:&Path,dir:&Path)->Result<Vec<PathBuf>>{
+ let raw=read_xml(&dir.join("pom.xml"))?;let doc=roxmltree::Document::parse(&raw).map_err(|e|Error(e.to_string()))?;let mut paths=vec![];
+ for activation in doc.descendants().filter(|n|n.has_tag_name("activation")){
+  if let Some(file)=xml_child(activation,"file"){for node in file.children().filter(|n|n.has_tag_name("exists")||n.has_tag_name("missing")){
+   let value=node.text().unwrap_or("").trim().replace("${basedir}",&dir.to_string_lossy()).replace("${project.basedir}",&dir.to_string_lossy());
+   paths.push(input_path(root,dir,&value)?);
+  }}
+ }
+ Ok(paths)
+}
 fn context(root:&Path,cfg:&RunConfig,plan:&maven::Plan,store:&Store)->Result<String>{
- let mut paths=vec![];for m in &plan.modules{let d=inside(root,m)?;paths.push(d.join("pom.xml"));paths.push(d.join(".mvn"));}
+ let mut paths=vec![];for m in &plan.modules{let d=inside(root,m)?;paths.push(d.join("pom.xml"));paths.push(d.join(".mvn"));paths.extend(profile_markers(root,&d)?);}
  if let Some(h)=dirs::home_dir(){paths.push(h.join(".m2/settings.xml"));paths.push(h.join(".m2/toolchains.xml"));}
  for key in ["maven_settings"]{if let Some(p)=store.build_tools.get(key){paths.push(PathBuf::from(p));}}
  let b=cfg.build.as_ref().unwrap();
@@ -172,5 +184,7 @@ pub async fn build(project:&Project,original:&RunConfig,cfg:&RunConfig,store:&St
  fn module(name:&str,deps:Vec<usize>)->Module{Module{path:name.into(),selector:name.into(),gav:name.into(),artifact:name.into(),packaging:"jar".into(),inputs:vec![],output:PathBuf::new(),artifact_dir:PathBuf::new(),deps}}
  #[test]fn impact_is_downstream_not_upstream(){let m=vec![module("base",vec![]),module("business",vec![0]),module("app",vec![1]),module("unrelated",vec![])];assert_eq!(downstream(&m,[1].into()),[1,2].into());assert_eq!(downstream(&m,[2].into()),[2].into());}
  #[test]fn hash_is_content_and_names_not_timestamp(){let t=tempfile::tempdir().unwrap();std::fs::write(t.path().join("a"),"old").unwrap();let a=paths_hash(&[t.path().into()]).unwrap();std::fs::write(t.path().join("a"),"new").unwrap();assert_ne!(a,paths_hash(&[t.path().into()]).unwrap());std::fs::remove_file(t.path().join("a")).unwrap();assert_ne!(a,paths_hash(&[t.path().into()]).unwrap());}
+ #[test]fn explicitly_declared_resources_are_never_name_filtered(){let t=tempfile::tempdir().unwrap();let nested=t.path().join("node_modules");std::fs::create_dir(&nested).unwrap();std::fs::write(nested.join("resource"),"a").unwrap();let a=paths_hash(&[t.path().into()]).unwrap();std::fs::write(nested.join("resource"),"b").unwrap();assert_ne!(a,paths_hash(&[t.path().into()]).unwrap());}
+ #[test]fn profile_marker_existence_is_part_of_model_context(){let t=tempfile::tempdir().unwrap();let root=native_path(t.path().canonicalize().unwrap());std::fs::write(root.join("pom.xml"),"<project><profiles><profile><activation><file><exists>${project.basedir}/activate</exists></file></activation></profile></profiles></project>").unwrap();let inputs=profile_markers(&root,&root).unwrap();let old=paths_hash(&inputs).unwrap();std::fs::write(root.join("activate"),"").unwrap();assert_ne!(old,paths_hash(&inputs).unwrap());}
  #[test]fn targeted_command_does_not_reintroduce_upstream(){let c=CommandSpec{program:"mvn".into(),args:vec!["-f".into(),"pom.xml".into(),"-pl".into(),"app".into(),"--also-make".into(),"clean".into(),"install".into()]};let out=subset(&c,&[module("a",vec![]),module("app",vec![0])],&[1].into());assert!(!out.args.contains(&"--also-make".into()));assert!(out.args.ends_with(&["-pl".into(),"app".into()]));}
 }
