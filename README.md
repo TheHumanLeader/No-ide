@@ -6,22 +6,22 @@
 
 ### [GitHub Releases · 公开下载](https://github.com/TheHumanLeader/No-ide/releases)
 
-当前公开版本：[v0.5.0 开发预览版](https://github.com/TheHumanLeader/No-ide/releases/tag/v0.5.0)。
+当前公开版本：[v0.5.1 开发预览版](https://github.com/TheHumanLeader/No-ide/releases/tag/v0.5.1)。本版增加真实构建任务反馈、持续结果与独立的取消构建操作。
 
 | 平台 | 下载 |
 | --- | --- |
-| Windows x64 | [No-ide-v0.5.0-windows-x64.zip](https://github.com/TheHumanLeader/No-ide/releases/download/v0.5.0/No-ide-v0.5.0-windows-x64.zip) |
-| macOS Apple Silicon | [No-ide-v0.5.0-macos-arm64.zip](https://github.com/TheHumanLeader/No-ide/releases/download/v0.5.0/No-ide-v0.5.0-macos-arm64.zip) |
-| Linux x64 | 本版日志跟随测试未通过，暂不发布 |
-| macOS Intel | 本版基础进程集成测试未通过，暂不发布 |
+| Windows x64 | [No-ide-v0.5.1-windows-x64.zip](https://github.com/TheHumanLeader/No-ide/releases/download/v0.5.1/No-ide-v0.5.1-windows-x64.zip) |
+| macOS Apple Silicon | [No-ide-v0.5.1-macos-arm64.zip](https://github.com/TheHumanLeader/No-ide/releases/download/v0.5.1/No-ide-v0.5.1-macos-arm64.zip) |
+| Linux x64 | 本次增量回归未全部通过，暂不发布 |
+| macOS Intel | 本次基础进程集成测试未通过，暂不发布 |
 
 下载 Assets 中的 **No-ide-v…zip**，不是 Source code。完整解压，保留 `web/` 和 `agent/`；Windows 打开 `Start-No-ide.bat`，Mac 打开 `No-ide.command`。不需要安装 Rust 或 IDEA，运行项目仍需要对应语言及构建环境。
 
-Windows 包通过该平台原生、浏览器和 HotSwap 专项；Mac ARM64 包通过原生/编码回归，但未执行浏览器和 HotSwap 专项。均为未签名、未公证的开发预览，不是生产稳定版。发布页附有 SHA256SUMS.txt、来源清单和每个平台的验证边界。
+Windows 包通过该平台原生、浏览器、构建反馈和 HotSwap 专项；Mac ARM64 包通过原生/编码回归，但未执行浏览器和 HotSwap 专项。均为未签名、未公证的开发预览，不是生产稳定版。发布页附有 SHA256SUMS.txt、来源清单和每个平台的验证边界。
 
-**源码对应关系：发行版以标签 `v0.5.0` 为准。** 本次只把发布工具和文档加入 main，未合并开发分支的程序代码；要构建与下载包相同的源码，请检出发行标签，而非使用 main 的历史程序版本。
+**源码对应关系：发行版以标签 `v0.5.1` 为准。** 发布工具和文档在 main，未合并开发分支的程序代码；要构建与下载包相同的源码，请检出发行标签，而非使用 main 的历史程序版本。
 
-[发布机制与下一版本发布步骤](prd/releases.md) · [Publish Release 工作流](https://github.com/TheHumanLeader/No-ide/actions/workflows/release.yml)
+[本版验证记录](prd/verification-v0.5.1.md) · [发布机制与下一版本发布步骤](prd/releases.md) · [Publish Release 工作流](https://github.com/TheHumanLeader/No-ide/actions/workflows/release.yml)
 
 ---
 
