@@ -5,7 +5,6 @@ on:
     paths: ['.feedback/**', '.github/workflows/apply-feedback.yml']
 permissions:
   contents: write
-  actions: write
 concurrency:
   group: apply-feedback-v051
   cancel-in-progress: false
@@ -18,8 +17,6 @@ jobs:
         with:
           fetch-depth: 0
       - name: Verify base, apply readable changes and compare reviewed source hashes
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           BASE=07c08d85686feaf131d4af96231249df963ac306
@@ -31,12 +28,12 @@ jobs:
           node --test tests/activity-model.test.js
           python -m py_compile tests/build-feedback-051.py
           git rm -r .feedback .github/workflows/apply-feedback.yml
-          git add .github/workflows/native.yml backend src tests package.json prd/build-feedback-v0.5.1.md
+          git add -u
+          git restore --source="$BASE" --staged --worktree .github/workflows/native.yml
           git diff --cached --check
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           TREE=$(git write-tree)
           SHA=$(printf 'feat: 显示真实构建阶段与持久结果，区分取消构建、停止实例和暂停日志\n' | git commit-tree "$TREE" -p "$BASE")
           git push origin "$SHA":refs/heads/feature/hotswap-v0.5
-          gh workflow run native.yml --ref feature/hotswap-v0.5
           printf 'source_commit=%s\n' "$SHA" >> "$GITHUB_STEP_SUMMARY"
