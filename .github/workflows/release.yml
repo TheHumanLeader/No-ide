@@ -4,15 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: '已完成的 Native executor 工作流编号；留空使用 releases/publish.json'
+        description: 'Native executor 工作流编号；留空使用 releases/publish.json'
         required: false
         type: string
       version:
-        description: '与编译产物一致的版本号，例如 0.5.0；留空使用发布清单'
+        description: '与编译产物一致的版本号；留空使用发布清单'
         required: false
         type: string
   push:
-    branches: [main, 'release/publish-v0.5.0']
+    branches: [main, 'release/publish-*']
     paths:
       - 'releases/publish.json'
       - '.github/workflows/release.yml'
@@ -28,7 +28,7 @@ jobs:
   publish:
     if: github.repository == 'TheHumanLeader/No-ide'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       actions: read
       contents: write
@@ -38,12 +38,38 @@ jobs:
           persist-credentials: false
       - name: Test release package validation
         run: python3 -m unittest discover -s scripts -p test_publish_release.py -v
+      - name: Wait for native tests and require the Windows result
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_RUN: ${{ inputs.run_id }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, time
+          request=json.load(open('releases/publish.json'))
+          run=int(os.environ.get('RELEASE_RUN') or request['run_id'])
+          repo=os.environ['GITHUB_REPOSITORY']
+          if repo!='TheHumanLeader/No-ide' or run<=0: raise SystemExit('Invalid release source')
+          def api(path): return json.loads(subprocess.check_output(['gh','api',path]))
+          for attempt in range(60):
+              data=api(f'repos/{repo}/actions/runs/{run}')
+              if data['status']=='completed': break
+              print('Waiting for native run',run,data['status'],flush=True);time.sleep(20)
+          else: raise SystemExit('Native run has not completed; nothing published')
+          jobs=api(f'repos/{repo}/actions/runs/{run}/jobs?filter=latest&per_page=100')['jobs']
+          windows=[j for j in jobs if j['name'].endswith(', windows-x64)')]
+          if len(windows)!=1 or windows[0]['conclusion']!='success':
+              raise SystemExit('Windows verification did not pass; nothing published')
+          PY
       - name: Verify CI provenance and publish native packages
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_RUN: ${{ inputs.run_id }}
           RELEASE_VERSION: ${{ inputs.version }}
         run: python3 scripts/publish_release.py --run "$RELEASE_RUN" --version "$RELEASE_VERSION"
+      - name: Include version-specific user-facing changes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/append_release_notes.py
       - name: Preserve publication manifest
         if: always()
         uses: actions/upload-artifact@v4
