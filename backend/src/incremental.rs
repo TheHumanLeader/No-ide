@@ -146,6 +146,7 @@ async fn dependency_paths(root:&Path,cfg:&RunConfig,modules:&[Module],hub:Arc<Hu
 }
 /// Caller owns both the Maven semaphore and the cancellation scope.
 pub async fn build(project:&Project,original:&RunConfig,cfg:&RunConfig,store:&Store,cache:&Path,force:bool,hub:Arc<Hub>)->Result<bool>{
+ hub.activities.phase(&cfg.id,"checking","正在核对源码和产物内容；尚未开始编译").await;
  let started=Instant::now();let root=project.root.clone();let original_cwd=inside(&root,&original.cwd)?;
  let plan=maven::resolve(&root,&original_cwd,original.launcher.as_ref().unwrap())?;
  let path=cache.join(format!("{}.json",hbytes(format!("{}\0{}\0{}",root.display(),project.id,original.id).as_bytes())));
@@ -154,7 +155,8 @@ pub async fn build(project:&Project,original:&RunConfig,cfg:&RunConfig,store:&St
   let ctx={let r=root.clone();let c=cfg.clone();let p=plan.clone();let s=store.clone();tokio::task::spawn_blocking(move||context(&r,&c,&p,&s)).await.map_err(|e|Error(e.to_string()))??};
   let old=load(&path).filter(|r|r.context==ctx);
   let mut reason=if force{"手动清理重建"}else if old.is_none(){"首次建立可信构建基线，或 POM / JDK / Maven / 构建环境已改变"}else{"比较本地源码及产物内容"}.to_string();let mut full=force||old.is_none();
-  let mut record=match old{Some(r)=>r,None=>{hub.log(&cfg.id,"build-plan","正在读取 Maven 有效模块模型；仅在首次或构建配置变化时执行，不修改项目 POM。").await;let(modules,opaque)=model(&root,cfg,&plan,hub.clone()).await?;Record{schema:SCHEMA,context:ctx.clone(),stamps:vec![Stamp::default();modules.len()],modules,dirty:BTreeSet::new(),external:vec![],external_hash:String::new(),opaque}}};
+  let mut record=match old{Some(r)=>r,None=>{hub.activities.phase(&cfg.id,"model","正在读取 Maven 模块模型；首次或配置变更时需要").await;hub.log(&cfg.id,"build-plan","正在读取 Maven 有效模块模型；仅在首次或构建配置变化时执行，不修改项目 POM。").await;let(modules,opaque)=model(&root,cfg,&plan,hub.clone()).await?;Record{schema:SCHEMA,context:ctx.clone(),stamps:vec![Stamp::default();modules.len()],modules,dirty:BTreeSet::new(),external:vec![],external_hash:String::new(),opaque}}};
+  hub.activities.phase(&cfg.id,"checking","正在比较源码、依赖和编译输出指纹").await;
   let dep_changed=if !full{let paths=record.external.clone();let hash=tokio::task::spawn_blocking(move||paths_hash(&paths)).await.map_err(|e|Error(e.to_string()))??;hash!=record.external_hash}else{false};
   if dep_changed{let(modules,opaque)=model(&root,cfg,&plan,hub.clone()).await?;record.modules=modules;record.opaque=opaque;record.stamps=vec![Stamp::default();record.modules.len()];full=true;reason="已解析的本地依赖文件发生变化，重新确认模型和构建范围".into();}
   if !record.opaque.is_empty(){full=true;reason=record.opaque.join("；");}
@@ -166,10 +168,12 @@ pub async fn build(project:&Project,original:&RunConfig,cfg:&RunConfig,store:&St
   // No compiler has run yet. A failed metadata probe is not a cache hit.
   if path.exists(){std::fs::remove_file(&path)?;}
   hub.log(&cfg.id,"build-plan",&format!("增量模型暂不可用：{}。保守执行原构建范围；未把未知状态当作最新。",e.0)).await;
+  hub.activities.phase(&cfg.id,"building","模型不适用，按原构建范围执行；请展开原因").await;
   execute(cfg.build.as_ref().unwrap(),cfg,&root,hub.clone()).await?;
   hub.log(&cfg.id,"build-selection",&serde_json::to_string(&Report{mode:"fallback".into(),selected:plan.modules.clone(),reused:vec![],reason:e.0,elapsed_ms:started.elapsed().as_millis()})?).await;return Ok(true)
  }};
  let report=Report{mode:if selected.is_empty(){"reuse"}else if full{"baseline"}else{"incremental"}.into(),selected:selected.iter().map(|i|record.modules[*i].path.clone()).collect(),reused:record.modules.iter().enumerate().filter(|(i,_)|!selected.contains(i)).map(|(_,m)|m.path.clone()).collect(),reason:reason.clone(),elapsed_ms:started.elapsed().as_millis()};
+ hub.activities.selection(&cfg.id,&report.selected,&report.reused,&report.mode,&report.reason).await;
  hub.log(&cfg.id,"build-selection",&serde_json::to_string(&report)?).await;
  if selected.is_empty(){hub.log(&cfg.id,"build-plan",&format!("本地源码与产物指纹一致：复用 {} 个模块，跳过构建阶段。检查耗时 {} ms。应用仍按既定启动方式运行。",record.modules.len(),started.elapsed().as_millis())).await;return Ok(false)}
  hub.log(&cfg.id,"build-plan",&format!("{}：本次重编 {} / {} 个模块 [{}]；复用 {} 个模块。仅清理所选模块，确保已删除类、内部类和资源不残留。",reason,selected.len(),record.modules.len(),report.selected.join(", "),report.reused.len())).await;
@@ -177,7 +181,9 @@ pub async fn build(project:&Project,original:&RunConfig,cfg:&RunConfig,store:&St
  // become a successful cache just because output files happen to be present.
  record.dirty.extend(selected.iter().copied());save(&path,&record)?;
  let command=if full{cfg.build.clone().unwrap()}else{subset(cfg.build.as_ref().unwrap(),&record.modules,&selected)};
+ hub.activities.phase(&cfg.id,"building",&format!("正在构建 {} 个模块，复用 {} 个",report.selected.len(),report.reused.len())).await;
  execute(&command,cfg,&root,hub.clone()).await?;
+ hub.activities.phase(&cfg.id,"verifying","编译结束，正在复核输入与输出；尚未应用").await;
  if full{record.external=dependency_paths(&root,cfg,&record.modules,hub.clone()).await?;}
  let modules=record.modules.clone();let after=tokio::task::spawn_blocking(move||stamps(&modules)).await.map_err(|e|Error(e.to_string()))??;
  if before.iter().zip(&after).any(|(a,b)|a.input!=b.input){return fail("构建期间源码又发生变化，未标记为最新，也未启动新版本；修改稳定后请再次应用改动")}

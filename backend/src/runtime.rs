@@ -7,9 +7,9 @@ use tokio::{sync::{Mutex,broadcast,mpsc,watch,Semaphore},io::{AsyncRead,AsyncRea
 #[derive(Clone,Serialize,Default)]pub struct RunView{pub instance:String,pub state:String,pub pid:Option<u32>,pub error:Option<String>,pub revision:u64,pub readiness:String,pub update_status:String,pub pending_reason:Option<String>}
 #[derive(Clone,Serialize)]pub struct Log{pub seq:u64,pub time:u64,pub instance:String,pub stream:String,pub text:String}
 #[derive(Default)]struct LogBuffer{seq:u64,bytes:usize,rows:VecDeque<Log>}
-pub struct Hub{pub tx:broadcast::Sender<Value>,logs:Mutex<LogBuffer>}
+pub struct Hub{pub tx:broadcast::Sender<Value>,logs:Mutex<LogBuffer>,pub activities:crate::activity::Activities}
 impl Hub{
- pub fn new()->Self{let(tx,_)=broadcast::channel(256);Self{tx,logs:Mutex::new(LogBuffer::default())}}
+ pub fn new()->Self{let(tx,_)=broadcast::channel(256);Self{activities:crate::activity::Activities::new(tx.clone()),tx,logs:Mutex::new(LogBuffer::default())}}
  pub async fn log(&self,instance:&str,stream:&str,text:&str){let text=text.chars().take(4096).collect::<String>();let mut b=self.logs.lock().await;b.seq+=1;let row=Log{seq:b.seq,time:SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis()as u64,instance:instance.into(),stream:stream.into(),text};b.bytes+=row.text.len();let _=self.tx.send(json!({"type":"log","data":row}));b.rows.push_back(row);while b.bytes>512*1024||b.rows.len()>2000{if let Some(r)=b.rows.pop_front(){b.bytes-=r.text.len();}}}
  pub async fn logs(&self)->Vec<Log>{self.logs.lock().await.rows.iter().cloned().collect()}
 }
@@ -34,26 +34,60 @@ impl Runtime{
  pub async fn start(&self,p:Project,i:Instance,store:Store)->Result<()> {
   let cfg=p.configs.iter().find(|c|c.id==i.config_id).cloned().ok_or_else(||Error("运行配置不存在".into()))?;
   let launch_store=store.clone();let key=format!("{}/{}",p.id,cfg.id);let mut groups=self.groups.lock().await;
+  if self.hub.activities.get(&cfg.id).await.map(|t|t.active()).unwrap_or(false){return fail("此配置正在更新，请等当前任务结束后再启动实例")}
   if let Some(s)=self.states.lock().await.get(&i.id){if ["starting","running","building","stopping"].contains(&s.state.as_str()){return fail("实例已经运行或正在处理中")}}
   if groups.get(&key).map(|g|g.tx.is_closed()).unwrap_or(false){groups.remove(&key);}
   if !groups.contains_key(&key){let(tx,rx)=mpsc::channel(32);let(cancel,_)=watch::channel(0u64);groups.insert(key.clone(),Group{tx,cancel:cancel.clone(),project:p.id.clone()});let rt=self.clone();tokio::spawn(async move{rt.actor(p,cfg,store,rx,cancel).await;});}
   self.state(&i.id,"starting",None,None,"等待启动",false).await;
   if groups[&key].tx.try_send(Control::Start(i.clone(),launch_store)).is_err(){self.state(&i.id,"error",None,Some("操作队列已满".into()),"",false).await;return fail("操作队列已满，请稍后重试")};Ok(())
  }
- pub async fn control(&self,p:&Project,i:&Instance,op:&str)->Result<()>{let key=format!("{}/{}",p.id,i.config_id);let groups=self.groups.lock().await;let g=groups.get(&key).ok_or_else(||Error("实例尚未运行".into()))?;if op=="stop"{g.cancel.send_modify(|v|*v+=1);g.tx.try_send(Control::Stop(i.id.clone())).map_err(|_|Error("控制队列已满".into()))?;}else if op=="restart"{g.tx.try_send(Control::Restart(i.id.clone())).map_err(|_|Error("控制队列已满".into()))?;}else{g.tx.try_send(Control::Update(op=="repair")).map_err(|_|Error("控制队列已满".into()))?;}Ok(())}
+ pub async fn control(&self,p:&Project,i:&Instance,op:&str)->Result<()>{
+  let key=format!("{}/{}",p.id,i.config_id);let groups=self.groups.lock().await;let g=groups.get(&key).ok_or_else(||Error("实例尚未运行".into()))?;
+  if op=="stop"{
+   if let Some(t)=self.hub.activities.get(&i.config_id).await{if t.active()&&t.cancellable{let _=self.hub.activities.cancel(&i.config_id,&t.id).await;}}
+   g.cancel.send_modify(|v|*v+=1);g.tx.try_send(Control::Stop(i.id.clone())).map_err(|_|Error("控制队列已满".into()))?;
+  }else{
+   let states=self.states.lock().await;
+   if !states.get(&i.id).map(|v|v.state=="running").unwrap_or(false){return fail("请等待实例启动或当前操作结束后再更新")}
+   if p.instances.iter().any(|x|x.config_id==i.config_id&&states.get(&x.id).map(|v|matches!(v.state.as_str(),"starting"|"building"|"stopping")).unwrap_or(false)){return fail("同配置实例正在启动或处理中，请等待其结束")}
+   let ids=if op=="restart"{vec![i.id.clone()]}else{p.instances.iter().filter(|x|x.config_id==i.config_id&&states.get(&x.id).map(|v|v.state=="running").unwrap_or(false)).map(|x|x.id.clone()).collect()};drop(states);
+   self.hub.activities.begin(&p.id,&i.config_id,ids,if op=="repair"{"repair"}else if op=="restart"{"restart"}else{"apply"}).await?;
+   let command=if op=="restart"{Control::Restart(i.id.clone())}else{Control::Update(op=="repair")};
+   if g.tx.try_send(command).is_err(){self.hub.activities.finish(&i.config_id,"failed","更新请求未排入队列","操作队列已满，请稍后再试").await;return fail("控制队列已满")}
+  }Ok(())
+ }
+ pub async fn cancel_build(&self,p:&Project,i:&Instance,task_id:&str)->Result<()>{let groups=self.groups.lock().await;let key=format!("{}/{}",p.id,i.config_id);let g=groups.get(&key).ok_or_else(||Error("配置任务已结束".into()))?;self.hub.activities.cancel(&i.config_id,task_id).await?;g.cancel.send_modify(|v|*v+=1);Ok(())}
+ async fn update_failed(&self,cfg:&RunConfig,children:&HashMap<String,Running>,e:Error){
+  let cancelled=self.hub.activities.cancelled(&cfg.id).await||e.0.starts_with("构建已取消");
+  let message=if cancelled{"本次构建已取消；No-ide 未停止原有实例"}else{"构建失败；改动尚未生效"};
+  for r in children.values(){self.state(&r.instance.id,"running",r.child.0.id(),if cancelled{None}else{Some(e.0.clone())},message,false).await;self.update_result(&r.instance.id,if cancelled{"cancelled"}else{"build-failed"},Some(e.0.clone())).await;}
+  self.hub.activities.finish(&cfg.id,if cancelled{"cancelled"}else{"failed"},message,&e.0).await;
+ }
+ async fn settle_activity(&self,cfg:&RunConfig){
+  let Some(t)=self.hub.activities.get(&cfg.id).await else{return};if !t.active()||t.phase!="waiting"{return}
+  let states=self.states.lock().await;let views:Vec<_>=t.instances.iter().filter_map(|id|states.get(id)).collect();
+  let result=if let Some(v)=views.iter().find(|v|v.state=="error"||v.state=="exited"){Some(("failed","构建结束，但新实例未成功就绪",v.error.clone().unwrap_or_else(||"新进程已经退出".into())))}
+   else if views.iter().any(|v|v.state=="stopped"){Some(("cancelled","实例已停止；不再等待启动结果","没有将停止视为更新成功".into()))}
+   else if views.len()==t.instances.len()&&views.iter().all(|v|v.state=="running"){Some(("succeeded","更新完成 · 新进程已启动",views.iter().map(|v|v.readiness.clone()).collect::<Vec<_>>().join("；")))}else{None};drop(states);
+  if let Some((status,message,detail))=result{self.hub.activities.finish(&cfg.id,status,message,&detail).await;}
+ }
  pub async fn forget_idle(&self,p:&Project)->Result<()> {if self.project_active(p).await{return fail("修改运行配置前请先停止本项目实例")};let mut groups=self.groups.lock().await;let keys:Vec<_>=groups.iter().filter(|(_,g)|g.project==p.id).map(|(k,_)|k.clone()).collect();for k in keys{if let Some(g)=groups.remove(&k){let _=g.tx.try_send(Control::Shutdown);}}Ok(())}
  pub async fn shutdown(&self){let groups=self.groups.lock().await;for g in groups.values(){g.cancel.send_modify(|v|*v+=1);let _=g.tx.send(Control::Shutdown).await;}}
  async fn build(&self,project:&Project,original:&RunConfig,store:&Store,cancel:&watch::Sender<u64>,force:bool)->Result<bool> {
   let is_maven=original.launcher.as_ref().map(|l|["spring-maven","maven-main"].contains(&l.kind.as_str())).unwrap_or(false);
-  let cfg=crate::launch::resolve(store,project,original,None,true)?;let mut cancelled=cancel.subscribe();
+  let mut cancelled=cancel.subscribe();
+  if self.hub.activities.cancelled(&original.id).await{return fail("构建已取消；没有启动新的构建进程")}
+  let cfg=crate::launch::resolve(store,project,original,None,true)?;
+  self.hub.activities.phase(&cfg.id,"queued","等待构建资源；原有实例继续运行").await;
   let run=async{
    let _maven=if is_maven{Some(self.maven_builds.acquire().await.map_err(|e|Error(e.to_string()))?)}else{None};
    let _permit=self.builds.acquire().await.map_err(|e|Error(e.to_string()))?;
+   self.hub.activities.phase(&cfg.id,"checking","正在检查源码、依赖与已有产物").await;
    if is_maven{return crate::incremental::build(project,original,&cfg,store,&self.build_cache,force,self.hub.clone()).await}
-   if let Some(b)=&cfg.build{let c=process::command(b,&inside(&project.root,&cfg.cwd)?,None,&[],&cfg.env)?;process::checked(capture_build(c,120,self.hub.clone(),cfg.id.clone(),cfg.output_encoding).await?)?;}
+   if let Some(b)=&cfg.build{self.hub.activities.phase(&cfg.id,"building","正在执行构建；原有实例继续运行").await;let c=process::command(b,&inside(&project.root,&cfg.cwd)?,None,&[],&cfg.env)?;process::checked(capture_build(c,120,self.hub.clone(),cfg.id.clone(),cfg.output_encoding).await?)?;}
    Ok::<_,Error>(true)
   };
-  tokio::select!{r=run=>r,_=cancelled.changed()=>fail("构建已取消；未把未完成产物标为最新")}
+  tokio::select!{biased;_=cancelled.changed()=>fail("构建已取消；未把未完成产物标为最新"),r=run=>r}
  }
  async fn launch(&self,project:&Project,cfg:&RunConfig,store:&Store,i:Instance)->Result<Running>{
   let root=&project.root;let original=cfg;let mut cfg=crate::launch::resolve(store,project,original,Some(&i),true)?;
@@ -91,25 +125,42 @@ impl Runtime{
     },
     Event::Control(Some(Control::Stop(id)))=>{if let Some(r)=children.remove(&id){self.stop_run(r).await;}else{self.state(&id,"stopped",None,None,"",false).await;}},
     Event::Control(Some(Control::Restart(id)))=>{
-     if !children.contains_key(&id){continue}
+     if !children.contains_key(&id){self.hub.activities.finish(&cfg.id,"cancelled","实例已停止","没有执行重启").await;continue}
      self.state(&id,"building",children[&id].child.0.id(),None,"检查当前源码，准备重启此实例",false).await;
      match self.build(&project,&cfg,&store,&cancel,false).await{
-      Err(e)=>self.state(&id,"running",children[&id].child.0.id(),Some(e.0),"构建失败，未重启",false).await,
-      Ok(_)=>{let r=children.remove(&id).unwrap();let i=r.instance.clone();self.stop_run(r).await;match self.launch(&project,&cfg,&store,i).await{Ok(r)=>{children.insert(id,r);},Err(e)=>self.state(&id,"error",None,Some(e.0),"",false).await}}
+      Err(e)=>{self.update_failed(&cfg,&children,e).await;while evrx.try_recv().is_ok(){}},
+      Ok(_)=>{if !self.hub.activities.seal(&cfg.id,"restarting","构建完成，正在重启选中的实例").await{self.update_failed(&cfg,&children,Error("构建已取消，未重启实例".into())).await;continue}
+       let r=children.remove(&id).unwrap();let i=r.instance.clone();self.stop_run(r).await;
+       match self.launch(&project,&cfg,&store,i).await{Ok(r)=>{children.insert(id,r);self.hub.activities.phase(&cfg.id,"waiting","新进程已启动，等待就绪检查").await;},Err(e)=>{self.state(&id,"error",None,Some(e.0.clone()),"",false).await;self.hub.activities.finish(&cfg.id,"failed","构建完成，但实例启动失败",&e.0).await;}}
+      }
      }
     },
     e @ (Event::Files|Event::Control(Some(Control::Update(_))))=>{
      let manual=matches!(e,Event::Control(Some(Control::Update(_))));let force=matches!(e,Event::Control(Some(Control::Update(true))));
-     if children.is_empty(){continue}tokio::time::sleep(Duration::from_millis(350)).await;while evrx.try_recv().is_ok(){}
-     for r in children.values(){self.state(&r.instance.id,"building",r.child.0.id(),None,"旧进程保留，正在构建",false).await;self.update_result(&r.instance.id,"building",None).await;}
+     if children.is_empty(){if manual{self.hub.activities.finish(&cfg.id,"cancelled","实例已停止，未执行更新","").await;}continue}
+     if !manual{let ids=children.keys().cloned().collect();if self.hub.activities.begin(&project.id,&cfg.id,ids,"auto").await.is_err(){continue}}
+     tokio::time::sleep(Duration::from_millis(350)).await;while evrx.try_recv().is_ok(){}
+     for r in children.values(){self.state(&r.instance.id,"building",r.child.0.id(),None,"旧进程保留，正在检查本次改动",false).await;self.update_result(&r.instance.id,"building",None).await;}
      deleted.store(false,Ordering::Release);
-     match self.build(&project,&cfg,&store,&cancel,force).await{
-      Err(e)=>{for r in children.values(){self.state(&r.instance.id,"running",r.child.0.id(),Some(e.0.clone()),"构建失败；No-ide 未停止旧进程",false).await;self.update_result(&r.instance.id,"build-failed",Some(e.0.clone())).await;}},
-      Ok(_)if crate::hot::enabled(&cfg)&&!force=>{if let Err(e)=self.apply_hot(&project,&cfg,&mut children).await{
-       for r in children.values(){self.state(&r.instance.id,"running",r.child.0.id(),None,"改动需要确认重启；旧实例继续运行",false).await;self.update_result(&r.instance.id,"restart-required",Some(e.0.clone())).await;self.hub.log(&r.instance.id,"update-pending",&e.0).await;}
-      }},
-      Ok(false)if !manual=>{for r in children.values(){self.state(&r.instance.id,"running",r.child.0.id(),None,"源码与产物未变，跳过构建及重启",false).await;}},
-      Ok(_)=>{let old=std::mem::take(&mut children);for(_,r)in old{let i=r.instance.clone();self.stop_run(r).await;match self.launch(&project,&cfg,&store,i.clone()).await{Ok(r)=>{children.insert(i.id.clone(),r);},Err(e)=>self.state(&i.id,"error",None,Some(e.0),"",false).await}}}
+     let result=self.build(&project,&cfg,&store,&cancel,force).await;
+     match result{
+      Err(e)=>{self.update_failed(&cfg,&children,e).await;while evrx.try_recv().is_ok(){}},
+      Ok(changed)=>{
+       if !self.hub.activities.seal(&cfg.id,"applying","构建与内容复核完成，正在应用改动").await{self.update_failed(&cfg,&children,Error("构建已取消；没有应用本次改动".into())).await;while evrx.try_recv().is_ok(){};continue}
+       if crate::hot::enabled(&cfg)&&!force{
+        match self.apply_hot(&project,&cfg,&mut children).await{
+         Ok(())=>{let states=self.states.lock().await;let any=children.keys().any(|id|states.get(id).map(|s|s.update_status=="hotswapped").unwrap_or(false));drop(states);self.hub.activities.finish(&cfg.id,"succeeded",if any{"改动已生效 · 已原地热替换"}else{"运行内容已是最新 · 未重启"},"Java 进程未重启；无需等待应用重新初始化").await;},
+         Err(e)=>{for r in children.values(){self.state(&r.instance.id,"running",r.child.0.id(),None,"本次改动尚未全部生效，需要确认重启",false).await;self.update_result(&r.instance.id,"restart-required",Some(e.0.clone())).await;self.hub.log(&r.instance.id,"update-pending",&e.0).await;}self.hub.activities.finish(&cfg.id,"restart-required","构建完成 · 需要重启才能完整生效",&e.0).await;}
+        }
+       }else if !changed&&!force{
+        for r in children.values(){self.state(&r.instance.id,"running",r.child.0.id(),None,"源码与产物一致；未构建、未重启",false).await;self.update_result(&r.instance.id,"current",None).await;}
+        self.hub.activities.finish(&cfg.id,"succeeded","已是最新 · 无需构建或重启","已核对本地源码与产物；没有跳过最新性检查").await;
+       }else{
+        self.hub.activities.phase(&cfg.id,"restarting","构建完成，正在重启受影响实例").await;
+        let old=std::mem::take(&mut children);let mut failed=None;for(_,r)in old{let i=r.instance.clone();self.stop_run(r).await;match self.launch(&project,&cfg,&store,i.clone()).await{Ok(r)=>{children.insert(i.id.clone(),r);},Err(e)=>{self.state(&i.id,"error",None,Some(e.0.clone()),"",false).await;failed=Some(e.0);}}}
+        if let Some(e)=failed{self.hub.activities.finish(&cfg.id,"failed","构建完成，但部分实例启动失败",&e).await;}else{self.hub.activities.phase(&cfg.id,"waiting","新进程已启动，等待就绪检查").await;}
+       }
+      }
      }
     },
     Event::Tick=>{
@@ -117,8 +168,10 @@ impl Runtime{
      for id in remove{if let Some(mut r)=children.remove(&id){let _=r.child.0.start_kill();let _=timeout(Duration::from_secs(3),r.child.0.wait()).await;for t in r.readers{t.abort();}}}
     }
    }
+   self.settle_activity(&cfg).await;
    if children.is_empty(){watcher.take();watch_failed=false;}else if watcher.is_none()&&!watch_failed&&!watch_paths.is_empty(){let tx=evtx.clone();let watched=make_watcher(&root,&watch_paths,tx,deleted.clone());match watched{Ok(w)=>watcher=Some(w),Err(e)=>{watch_failed=true;self.hub.log(&cfg.id,"error",&format!("文件监听未启用：{}",e.0)).await;}}}
   }
+  self.hub.activities.finish(&cfg.id,"cancelled","执行器正在退出；任务已终止","").await;
   drop(watcher);for(_,r)in children{self.stop_run(r).await;}
  }
 }

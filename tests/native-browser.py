@@ -55,7 +55,7 @@ with tempfile.TemporaryDirectory(prefix='no-ide-ui-') as temp:
             expect(page.locator('.live-instance-status')).to_contain_text('PID');check('Run button starts actual process and reports PID')
             assert b'sample.txt' in urllib.request.urlopen(f'http://127.0.0.1:{port}').read();check('Started app serves real HTTP response')
             page.screenshot(path=str(OUT/'native-running.png'),full_page=True)
-            page.locator('.live-instance').get_by_role('button',name='停止',exact=True).click()
+            page.locator('.live-instance').get_by_role('button',name='停止实例',exact=True).click()
             expect(page.locator('.live-instance-status .status')).to_have_text('已停止');check('Stop button stops actual process')
             (project/'sample.txt').write_text('new native UI line\n',encoding='utf8')
             page.locator('.nav-item').filter(has_text='代码管理').click()

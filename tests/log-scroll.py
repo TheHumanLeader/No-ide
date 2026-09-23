@@ -81,10 +81,10 @@ while True:
             expect(auto).to_be_checked();expect(body).to_contain_text('LOG00560');bottom()
             emit(640);bottom()
             check('Back-to-bottom catches up and resumes following future output')
-            page.get_by_role('button',name='暂停展示',exact=True).click(); saved=viewport_state()
+            page.get_by_role('button',name='暂停日志显示',exact=True).click(); saved=viewport_state()
             emit(720,False);page.wait_for_timeout(150)
             check('Explicit pause freezes displayed records and position',viewport_state()==saved)
-            page.get_by_role('button',name='继续展示',exact=True).click()
+            page.get_by_role('button',name='继续日志显示',exact=True).click()
             expect(body).to_contain_text('LOG00720');bottom();expect(auto).to_be_checked()
             check('Continue display resumes at the newest output')
             body.focus();page.keyboard.press('PageUp');expect(auto).not_to_be_checked()
@@ -133,7 +133,7 @@ while True:
             body.hover();page.mouse.wheel(0,-400);expect(auto).not_to_be_checked()
             panel.screenshot(path=str(OUT/'native-log-scroll-review.png'))
             browser.close()
-            report['backend_version']=n.api('state').get('version','0.4.2 (reused release)')
+            report['backend_version']=__import__('urllib.request',fromlist=['urlopen']).urlopen(n.base+'/health').read().decode()
 try:
     main();report['passed']=True
 finally:

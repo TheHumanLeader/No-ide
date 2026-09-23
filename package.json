@@ -1,6 +1,6 @@
 {
   "name": "no-ide",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "type": "module",
   "description": "No-ide — 面向操作和结果的轻量代码运行工作台",
@@ -8,10 +8,17 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "check": "node --check src/app.js && node --check src/catalog.js && node --check src/project-model.js && node --check src/source-control.js && node --check src/main.js && node --check src/live-workbench.js && node --check src/live-v04.js && node --check src/selection.js && node --check src/incremental-workbench.js",
-    "test": "node --test tests/models.test.js tests/selection.test.js"
+    "check": "node --check src/app.js && node --check src/catalog.js && node --check src/project-model.js && node --check src/source-control.js && node --check src/main.js && node --check src/live-workbench.js && node --check src/live-v04.js && node --check src/selection.js && node --check src/incremental-workbench.js && node --check src/activity-model.js && node --check src/build-activity.js",
+    "test": "node --test tests/models.test.js tests/selection.test.js tests/activity-model.test.js"
   },
-  "engines": { "node": "^20.19.0 || >=22.12.0" },
-  "dependencies": { "quasar": "2.33.0", "vue": "3.5.43" },
-  "devDependencies": { "vite": "8.3.0" }
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "dependencies": {
+    "quasar": "2.33.0",
+    "vue": "3.5.43"
+  },
+  "devDependencies": {
+    "vite": "8.3.0"
+  }
 }

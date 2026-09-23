@@ -1,3 +1,4 @@
+import { activeActivity, mergeActivities, phaseLabel } from './activity-model.js'
 import { metadataPath } from './selection.js'
 import { useWorkbenchV04 } from './live-v04.js'
 import environmentPanel from './environment-panel.html?raw'
@@ -15,6 +16,7 @@ export function createLiveWorkbench(health) {
   components:{ ValueRows },
   setup() {
    const projects=ref([]), selectedProject=ref(''), runs=ref({}), logs=ref([]), tools=ref(null), settings=ref({}), page=ref('run')
+   const activities=ref({}), pendingRuns=ref({})
    const connected=ref(false), busy=ref(0), error=ref(''), notice=ref(''), modal=ref(''), form=ref({}), plan=ref(null)
    const repoId=ref(''), repoStatus=ref(null), selectedFiles=ref([]), file=ref(''), diff=ref(''), staged=ref(false), diffMode=ref('unified'), message=ref('')
    const diffBusy=ref(false),diffError=ref('');let diffTimer=0,diffPending=null,diffInFlight=false
@@ -40,12 +42,18 @@ export function createLiveWorkbench(health) {
     if(!r.ok){if(r.status===401){connected.value=false;throw Error('本地会话已失效，请使用执行器新打开的浏览器地址。')}throw Error(data.error||`请求失败 (${r.status})`)}return data
    }
    async function act(fn) {busy.value++;error.value='';try{return await fn()}catch(e){error.value=e.message||String(e)}finally{busy.value--}}
-   async function refresh(){const d=await api('state');projects.value=d.store.projects;settings.value=d.store.tools;v04.setStore(d.store);runs.value=Object.fromEntries(d.runs.map(r=>[r.instance,r]));if(!projects.value.some(p=>p.id===selectedProject.value))selectedProject.value=projects.value[0]?.id||'';connected.value=true}
+   const taskFor=i=>activities.value[i.config_id]
+   const updateBusy=i=>!!pendingRuns.value[i.config_id]||activeActivity(taskFor(i))
+   const updateText=i=>pendingRuns.value[i.config_id]&&!activeActivity(taskFor(i))?'提交中…':activeActivity(taskFor(i))?phaseLabel(taskFor(i).phase)+'…':'应用改动'
+   const activeTaskCount=computed(()=>Object.values(activities.value).filter(activeActivity).length)
+   function receiveTasks(tasks,announce=false){activities.value=mergeActivities(activities.value,tasks);if(announce){for(const task of tasks){if(task.finished_at&&task.project===project.value?.id)notice.value=task.message}}}
+   async function refresh(){const d=await api('state');receiveTasks(d.activities||[]);projects.value=d.store.projects;settings.value=d.store.tools;v04.setStore(d.store);runs.value=Object.fromEntries(d.runs.map(r=>[r.instance,r]));if(!projects.value.some(p=>p.id===selectedProject.value))selectedProject.value=projects.value[0]?.id||'';connected.value=true}
    function connect(){
     if(!mounted||!token)return;ws=new WebSocket(location.origin.replace(/^http/,'ws')+'/api/events')
     ws.onopen=()=>{ws.send(token);attempts=0;connected.value=true}
     ws.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch{return}
-     if(m.type==='snapshot'){runs.value=Object.fromEntries(m.states.map(s=>[s.instance,s]));logs.value=m.logs.slice(-1000)}
+     if(m.type==='activity')receiveTasks([m.data],true)
+     if(m.type==='snapshot'){activities.value=mergeActivities({},m.activities||[]);runs.value=Object.fromEntries(m.states.map(s=>[s.instance,s]));logs.value=m.logs.slice(-1000)}
      if(m.type==='state')runs.value={...runs.value,[m.data.instance]:m.data}
      if(m.type==='log'){flushQueue.push(m.data);if(flushQueue.length>256)flushQueue.splice(0,flushQueue.length-256);if(!frame)frame=requestAnimationFrame(()=>{logs.value=[...logs.value,...flushQueue].slice(-1000);flushQueue=[];frame=0})}
     }
@@ -66,7 +74,14 @@ export function createLiveWorkbench(health) {
    function instanceForm(i){if(!project.value?.configs.length){configForm();return}form.value=i?{...i,args:i.args.join('\n'),env:Object.entries(i.env).map(([k,v])=>`${k}=${v}`).join('\n')}:{id:'',name:'实例 '+String(project.value.instances.length+1).padStart(2,'0'),config_id:project.value.configs[0].id,port:null,args:'',env:''};modal.value='instance'}
    function cloneInstance(i){instanceForm({...i,id:'',name:i.name+' 副本',port:i.port?i.port+1:null})}
    async function saveInstance(){await act(async()=>{const f=form.value;await api('instance.save',{project:project.value.id,instance:{id:f.id,name:f.name,config_id:f.config_id,port:f.port?Number(f.port):null,args:lines(f.args),env:envParse(f.env)}});await refresh();modal.value='';notice.value='实例已保存。端口会实际替换命令中的 {port}，并设置 PORT 环境变量。'})}
-   async function run(i,op){await act(async()=>{await api('run.'+op,{project:project.value.id,instance:i.id});await refresh()})}
+   async function run(i,op,extra={}){
+    if(!connected.value){error.value='执行器未连接，无法确认或操作任务。';return}
+    if(op!=='stop'&&op!=='cancel'&&updateBusy(i)){error.value='这份配置已有任务，请查看进度；没有重复排队。';return}
+    const pid=project.value.id,key=i.config_id
+    pendingRuns.value={...pendingRuns.value,[key]:{kind:op,since:Date.now()}}
+    await act(async()=>{try{await api('run.'+op,{project:pid,instance:i.id,...extra});await refresh()}finally{const copy={...pendingRuns.value};delete copy[key];pendingRuns.value=copy}})
+   }
+   async function cancelBuild(i,task){await run(i,'cancel',{task_id:task.id})}
    async function runAll(op){await act(async()=>{const p=project.value;for(const i of p.instances){const active=['running','starting','building','stopping'].includes(runs.value[i.id]?.state);if((op==='start'&&!active)||(op==='stop'&&active))await api('run.'+op,{project:p.id,instance:i.id})}await refresh()})}
    function editTools(){const src=scope.value==='global'?settings.value:project.value?.tools||{};toolForm.value={git:src.git||'',svn:src.svn||'',svn_config_dir:src.svn_config_dir||''}}
    watch(scope,()=>{editTools();void act(detectTools)})
@@ -101,7 +116,7 @@ export function createLiveWorkbench(health) {
    const v04=useWorkbenchV04({api,act,refresh,project,projects,repo,repoId,repoStatus,selectedFiles,file,diff,modal,form,page,notice,message,plan,loadRepo,selectFile,oldConfigForm:configForm,oldInstanceForm:instanceForm})
    onMounted(()=>{void act(async()=>{if(!token)throw Error('请从本地执行器自动打开的地址进入，以建立受保护的会话。');await refresh();connect();await detectTools()})})
    onUnmounted(()=>{mounted=false;clearTimeout(diffTimer);ws?.close();clearTimeout(reconnectTimer);if(frame)cancelAnimationFrame(frame)})
-   return {diffBusy,diffError,health,projects,selectedProject,project,runs,logs,tools,settings,page,connected,busy,error,notice,modal,form,plan,repoId,repo,repoStatus,selectedFiles,file,diff,staged,diffMode,message,scope,toolForm,filter,paused,visibleLogs,diffRows,liveCount,stateText,label,act,refresh,go,openAdd,chooseProjectFolder,chooseField,saveProject,configForm,useTemplate,saveConfig,instanceForm,cloneInstance,saveInstance,run,runAll,editTools,detectTools,pickTool,saveTools,loadRepo,selectFile,addRepo,opName,prepare,execute,pause,copyLogs,...v04}
+   return {activities,pendingRuns,taskFor,updateBusy,updateText,activeTaskCount,cancelBuild,api,diffBusy,diffError,health,projects,selectedProject,project,runs,logs,tools,settings,page,connected,busy,error,notice,modal,form,plan,repoId,repo,repoStatus,selectedFiles,file,diff,staged,diffMode,message,scope,toolForm,filter,paused,visibleLogs,diffRows,liveCount,stateText,label,act,refresh,go,openAdd,chooseProjectFolder,chooseField,saveProject,configForm,useTemplate,saveConfig,instanceForm,cloneInstance,saveInstance,run,runAll,editTools,detectTools,pickTool,saveTools,loadRepo,selectFile,addRepo,opName,prepare,execute,pause,copyLogs,...v04}
   },
   template: liveTemplate.replace('<!-- runtime-environments -->',environmentPanel).replace('<!-- configuration-dialogs -->',configurationDialogs).replace('<!-- change-groups -->',changeGroups)
  }

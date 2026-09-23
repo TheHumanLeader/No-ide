@@ -31,7 +31,7 @@ def main():
    page.get_by_label('实例端口').fill(str(port));page.get_by_role('button',name='保存实例',exact=True).click();expect(page.get_by_role('dialog')).to_have_count(0)
    page.locator('.live-instance').get_by_role('button',name='运行',exact=True).click();expect(page.locator('.live-instance .status')).to_have_text('运行中')
    result=json.load(urllib.request.urlopen(f'http://127.0.0.1:{port}',timeout=10));assert result=={'flag':'value with spaces','arg':'one argument with spaces'},result;check('UI chosen environment and visual fields reach real HTTP app')
-   page.locator('.live-instance').get_by_role('button',name='停止',exact=True).click();expect(page.locator('.live-instance .status')).to_have_text('已停止')
+   page.locator('.live-instance').get_by_role('button',name='停止实例',exact=True).click();expect(page.locator('.live-instance .status')).to_have_text('已停止')
    (root/'work.txt').write_text('committed change\n',encoding='utf8');(root/'keep.txt').write_text('kept local\n',encoding='utf8');cli(git,'add','keep.txt',cwd=root)
    page.locator('.nav-item').filter(has_text='代码管理').click();expect(page.locator('.live-file')).to_have_count(2)
    page.get_by_role('button',name='＋ 新建分组',exact=True).click();page.get_by_label('分组名称').fill('忽略不提交');page.get_by_role('button',name='保存分组',exact=True).click();expect(page.get_by_role('button',name='分组 忽略不提交',exact=True)).to_be_visible();check('Custom group created through UI')

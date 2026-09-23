@@ -117,11 +117,12 @@ export const RuntimeLogs = {
   <header class="panel-header">
     <div><h2>运行日志</h2><span class="tiny-muted">实时进程输出 · 最近 120 条</span></div>
     <div class="live-log-actions">
-      <label class="log-auto-toggle"><input type="checkbox" aria-label="自动滚动日志" :checked="autoScroll" @change="$event.target.checked?resume():disableFollow()">自动滚动</label>
-      <button class="text-button" @click="pause">{{paused?'继续展示':'暂停展示'}}</button>
+      <label class="log-auto-toggle"><input type="checkbox" aria-label="自动滚动日志" :checked="autoScroll" @click.stop="autoScroll?disableFollow():resume()">自动滚动</label>
+      <button class="text-button" @click="pause" title="只冻结日志面板；不暂停构建，也不停止实例">{{paused?'继续日志显示':'暂停日志显示'}}</button>
       <button class="text-button" @click="copyLogs">复制可见日志</button>
     </div>
   </header>
+  <div class="live-log-pause-note">{{paused?'日志显示已暂停；构建、任务进度和实例仍继续运行。':'暂停日志显示只冻结此面板，不影响构建和实例。'}}</div>
   <div class="live-log-search"><input v-model="filter" placeholder="筛选日志内容" aria-label="筛选日志内容"></div>
   <div class="live-log-viewport">
     <div ref="viewport" class="live-log-body" tabindex="0" role="region" aria-label="运行日志内容"

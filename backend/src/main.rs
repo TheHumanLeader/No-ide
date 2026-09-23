@@ -1,4 +1,4 @@
-mod hot;mod incremental;mod environments;mod discovery;mod launch;mod groups;mod workspace;mod core;mod process;mod tools;mod runtime;mod scm;
+mod activity;mod hot;mod incremental;mod environments;mod discovery;mod launch;mod groups;mod workspace;mod core;mod process;mod tools;mod runtime;mod scm;
 use crate::core::*;
 use axum::{Router,Json,extract::{State,Request,DefaultBodyLimit,ws::{WebSocketUpgrade,Message}},http::{StatusCode,header},middleware::{self,Next},response::{IntoResponse,Response},routing::{get,post}};
 use serde::Deserialize;
@@ -28,7 +28,7 @@ async fn events(State(s):State<Arc<App>>,ws:WebSocketUpgrade)->Response{
   let auth=tokio::time::timeout(std::time::Duration::from_secs(5),socket.recv()).await;
   let ok=match auth{Ok(Some(Ok(Message::Text(t))))=>token_equal(&t,&s.token),_=>false};if !ok{return}
   let mut rx=s.runtime.hub.tx.subscribe();
-  let initial=json!({"type":"snapshot","states":s.runtime.views().await,"logs":s.runtime.hub.logs().await});
+  let initial=json!({"type":"snapshot","states":s.runtime.views().await,"logs":s.runtime.hub.logs().await,"activities":s.runtime.hub.activities.views().await});
   if socket.send(Message::Text(initial.to_string().into())).await.is_err(){return}
   loop{tokio::select!{
    event=rx.recv()=>{match event{Ok(v)=>{if tokio::time::timeout(std::time::Duration::from_secs(3),socket.send(Message::Text(v.to_string().into()))).await.map(|r|r.is_err()).unwrap_or(true){break}},Err(_)=>{break}}},
@@ -39,7 +39,7 @@ async fn events(State(s):State<Arc<App>>,ws:WebSocketUpgrade)->Response{
 async fn call(State(s):State<Arc<App>>,Json(call):Json<Call>)->Result<Json<Value>>{
  let v=&call.params;if let Some(result)=workspace::dispatch(&s,&call.action,v).await? {return Ok(Json(result));}
  let result=match call.action.as_str(){
-  "state"=>json!({"store":s.store.lock().await.clone(),"runs":s.runtime.views().await}),
+  "state"=>json!({"store":s.store.lock().await.clone(),"runs":s.runtime.views().await,"activities":s.runtime.hub.activities.views().await}),
   "tools.detect"=>{
    let store=s.store.lock().await.clone();let mut effective=store.tools.clone();let mut overrides=ToolSettings::default();
    if let Some(pid)=v["project"].as_str(){overrides=store.project(pid)?.tools;effective.git=overrides.git.clone().or(effective.git);effective.svn=overrides.svn.clone().or(effective.svn);}
@@ -83,10 +83,10 @@ async fn call(State(s):State<Arc<App>>,Json(call):Json<Call>)->Result<Json<Value
    };
    updated.save(&s.file)?;*store=updated;object
   },
-  "run.start"|"run.stop"|"run.update"|"run.apply"|"run.restart"|"run.repair"=>{
+  "run.cancel"|"run.start"|"run.stop"|"run.update"|"run.apply"|"run.restart"|"run.repair"=>{
    if call.action=="run.repair"{confirm(v)?;}
    let _operation=if call.action=="run.start"{Some(s.writes.lock().await)}else{None};let store=s.store.lock().await.clone();let p=store.project(string(v,"project")?)?;let i=p.instances.iter().find(|i|Some(i.id.as_str())==v["instance"].as_str()).cloned().ok_or_else(||Error("实例不存在".into()))?;
-   if call.action=="run.start"{s.runtime.start(p,i,store.clone()).await?}else{s.runtime.control(&p,&i,if call.action=="run.stop"{"stop"}else if call.action=="run.repair"{"repair"}else if call.action=="run.restart"{"restart"}else{"update"}).await?};json!({"accepted":true})
+   if call.action=="run.cancel"{s.runtime.cancel_build(&p,&i,string(v,"task_id")?).await?}else if call.action=="run.start"{s.runtime.start(p,i,store.clone()).await?}else{s.runtime.control(&p,&i,if call.action=="run.stop"{"stop"}else if call.action=="run.repair"{"repair"}else if call.action=="run.restart"{"restart"}else{"update"}).await?};json!({"accepted":true})
   },
   "vcs.status"|"vcs.diff"|"vcs.prepare"|"vcs.execute"=>{
    let _guard=s.vcs.lock().await;let _operation=if ["vcs.prepare","vcs.execute"].contains(&call.action.as_str()){Some(s.writes.lock().await)}else{None};let store=s.store.lock().await.clone();let p=store.project(string(v,"project")?)?;let r=p.repos.iter().find(|r|Some(r.id.as_str())==v["repo"].as_str()).ok_or_else(||Error("仓库不存在".into()))?;
