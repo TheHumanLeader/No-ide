@@ -110,6 +110,9 @@ jobs:
       - name: SVN .git grouping browser regression
         if: runner.os == 'Linux' || runner.os == 'Windows'
         run: python tests/metadata_groups.py --browser
+      - name: Real build task progress and cancellation
+        if: runner.os == 'Linux' || runner.os == 'Windows'
+        run: python tests/build-feedback-051.py
       - name: Real 150-file grouping and Maven startup regressions
         if: runner.os == 'Linux' || runner.os == 'Windows'
         run: python tests/fix-041.py
