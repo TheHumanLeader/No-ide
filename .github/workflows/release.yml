@@ -1,0 +1,57 @@
+name: Publish Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: '已完成的 Native executor 工作流编号；留空使用 releases/publish.json'
+        required: false
+        type: string
+      version:
+        description: '与编译产物一致的版本号，例如 0.5.0；留空使用发布清单'
+        required: false
+        type: string
+  push:
+    branches: [main, 'release/publish-v0.5.0']
+    paths:
+      - 'releases/publish.json'
+      - '.github/workflows/release.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: no-ide-release-publication
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'TheHumanLeader/No-ide'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test release package validation
+        run: python3 -m unittest discover -s scripts -p test_publish_release.py -v
+      - name: Verify CI provenance and publish native packages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_RUN: ${{ inputs.run_id }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: python3 scripts/publish_release.py --run "$RELEASE_RUN" --version "$RELEASE_VERSION"
+      - name: Preserve publication manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-publication-record
+          path: |
+            release-notes.md
+            release-out/release-manifest.json
+            release-out/SHA256SUMS.txt
+          if-no-files-found: ignore
+          retention-days: 30
