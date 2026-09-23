@@ -133,7 +133,7 @@ while True:
             body.hover();page.mouse.wheel(0,-400);expect(auto).not_to_be_checked()
             panel.screenshot(path=str(OUT/'native-log-scroll-review.png'))
             browser.close()
-            report['backend_version']=__import__('urllib.request',fromlist=['urlopen']).urlopen(n.base+'/health').read().decode()
+            report['backend_version']=json.load(__import__('urllib.request',fromlist=['urlopen']).urlopen(n.base+'/api/health',timeout=5))['version']
 try:
     main();report['passed']=True
 finally:

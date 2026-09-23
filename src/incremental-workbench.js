@@ -33,7 +33,7 @@ export function createLiveWorkbench(health) {
         await state.run(instance,'repair',{confirmed:true})
       }
 
-      return { ...state, repairBuild }
+      return { ...state, repairBuild, updateText:instance=>state.taskFor(instance)?.status==='cancelling'?'取消中…':state.updateText(instance) }
     }
   }
 }

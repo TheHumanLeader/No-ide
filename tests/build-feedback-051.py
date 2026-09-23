@@ -91,7 +91,7 @@ http.server.HTTPServer(('127.0.0.1',int(os.environ['PORT'])),Handler).serve_fore
    check('Stop instance also cancels shared build without stopping its sibling',task()['status']=='cancelled' and result(instances[1])==before[1])
    page.set_viewport_size({'width':390,'height':844});check('Progress UI does not overflow mobile viewport',page.evaluate('document.documentElement.scrollWidth<=innerWidth'))
    check('No uncaught browser errors',not report['errors'])
-   report['version']=json.load(urllib.request.urlopen(n.base+'/health'))['version']
+   report['version']=json.load(urllib.request.urlopen(n.base+'/api/health',timeout=5))['version']
    browser.close()
 try:
  main();report['passed']=True
