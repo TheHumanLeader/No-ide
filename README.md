@@ -2,7 +2,32 @@
 
 **代码交给 AI，运行留在这里。**
 
-## v0.3：真实 Rust 本地执行器
+## 直接下载运行包
+
+### [GitHub Releases · 公开下载](https://github.com/TheHumanLeader/No-ide/releases)
+
+当前公开版本：[v0.5.0 开发预览版](https://github.com/TheHumanLeader/No-ide/releases/tag/v0.5.0)。
+
+| 平台 | 下载 |
+| --- | --- |
+| Windows x64 | [No-ide-v0.5.0-windows-x64.zip](https://github.com/TheHumanLeader/No-ide/releases/download/v0.5.0/No-ide-v0.5.0-windows-x64.zip) |
+| macOS Apple Silicon | [No-ide-v0.5.0-macos-arm64.zip](https://github.com/TheHumanLeader/No-ide/releases/download/v0.5.0/No-ide-v0.5.0-macos-arm64.zip) |
+| Linux x64 | 本版日志跟随测试未通过，暂不发布 |
+| macOS Intel | 本版基础进程集成测试未通过，暂不发布 |
+
+下载 Assets 中的 **No-ide-v…zip**，不是 Source code。完整解压，保留 `web/` 和 `agent/`；Windows 打开 `Start-No-ide.bat`，Mac 打开 `No-ide.command`。不需要安装 Rust 或 IDEA，运行项目仍需要对应语言及构建环境。
+
+Windows 包通过该平台原生、浏览器和 HotSwap 专项；Mac ARM64 包通过原生/编码回归，但未执行浏览器和 HotSwap 专项。均为未签名、未公证的开发预览，不是生产稳定版。发布页附有 SHA256SUMS.txt、来源清单和每个平台的验证边界。
+
+**源码对应关系：发行版以标签 `v0.5.0` 为准。** 本次只把发布工具和文档加入 main，未合并开发分支的程序代码；要构建与下载包相同的源码，请检出发行标签，而非使用 main 的历史程序版本。
+
+[发布机制与下一版本发布步骤](prd/releases.md) · [Publish Release 工作流](https://github.com/TheHumanLeader/No-ide/actions/workflows/release.yml)
+
+---
+
+## main 分支历史实现：v0.3 真实 Rust 本地执行器
+
+以下为 main 原有 v0.3 实现说明与历史验证范围；当前下载包的功能和平台状态以上方 Release 为准。
 
 本地版使用 Rust + Quasar，已经接通真实进程、日志、Git / SVN 状态、Diff、提交和更新。不需要为了控制台安装 Rust、Node.js 或 IDEA；运行自己的项目仍需本机已有对应工具链。
 
@@ -43,7 +68,7 @@ SVN：读取状态与 Diff → 添加选中文件 → 检查并提交到服务�
 
 Linux 上另已实测 Java 21 双实例、源码重编译后真实接口更新、编译失败保留旧响应，以及 Node.js 实际服务更新；不等于 Spring Boot / Android 专项已经完成。
 
-## 当前边界
+## v0.3 的历史边界
 
 通用构建后重启不是 JVM 原地 HotSwap。Spring 专用增量构建、Android 完整 ADB 设备部署、clone/checkout、可视化冲突处理、远端执行器和原子构建产物发布尚未实现。Android 当前仅有构建命令模板。
 
